@@ -24,3 +24,6 @@ __pycache__/
 # Project backups
 backup/
 backup_*/
+
+# PlatformIO
+.pio/
