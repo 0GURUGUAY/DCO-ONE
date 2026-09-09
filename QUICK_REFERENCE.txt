@@ -1,0 +1,214 @@
+// ============================================================================
+// QUICK REFERENCE CARD
+// ============================================================================
+// Fiche de référence rapide - 1 page pour tout comprendre
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║                      NUMERIC INPUTS - QUICK REFERENCE                     ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+📋 STRUCTURE D'UN PARAMÈTRE NUMÉRIQUE
+────────────────────────────────────────────────────────────────────────────
+
+struct NumericParam {
+    int32_t     minValue;           // Ex: 1
+    int32_t     maxValue;           // Ex: 200
+    int32_t     step;               // Ex: 1 (incrément par cran)
+    int32_t     value;              // Ex: 120 (valeur courante)
+    const char* unit;               // Ex: "BPM" (affiché au ESP32)
+};
+
+Exemple complet :
+  static NumericParam kBpmParam = { 1, 200, 1, 120, "BPM" };
+
+🔌 LES 3 ÉLÉMENTS D'UNE INTÉGRATION
+────────────────────────────────────────────────────────────────────────────
+
+1️⃣  DÉCLARATION du NumericParam
+     static NumericParam kMyParam = { min, max, step, value, "unit" };
+
+2️⃣  FONCTION CALLBACK (Apply)
+     static void ApplyMyParam(int32_t index) {
+         float val = static_cast<float>(kMyParam.value);
+         // synth.SetSomething(val);
+     }
+
+3️⃣  INTÉGRATION AU MENU (MenuNode)
+     { "My Param", COLOR_DEFAULT, nullptr, 0, ApplyMyParam, 0, &kMyParam }
+                                                      ↑              ↑
+                                            callback function   NumericParam pointer
+
+📦 OÙ PLACER CHAQUE BLOC DANS main.cpp
+────────────────────────────────────────────────────────────────────────────
+
+BLOC 1 (Déclarations) :
+  Position : après la ligne ~258 (kBpmParam = { ... })
+  Avant :   static MenuNode kPlaySubmenu[] = {
+  Taille :  ~38 lignes
+
+BLOC 2 (Fonctions Apply) :
+  Position : après ApplyWaveform() vers ligne ~190
+  Avant :   static MenuNode kPlaySubmenu[] = {
+  Taille :  ~160 lignes
+
+BLOC 3 (MenuNode arrays) :
+  Position : remplacer entièrement (10 structures)
+  Avant :   kPlaySubmenu[], kOscSubmenu[], etc.
+  Taille :  ~110 lignes
+
+⚙️  CONVERSIONS COURANTES
+────────────────────────────────────────────────────────────────────────────
+
+De int32_t vers float :
+  float val = static_cast<float>(kMyParam.value);
+
+Pourcentage (0-100%) vers ratio (0.0-1.0) :
+  float ratio = kMyParam.value / 100.0f;
+
+Millisecondes vers secondes :
+  float sec = static_cast<float>(kMyParam.value) / 1000.0f;
+
+Cents vers ratio fréquence :
+  float ratio = powf(2.0f, kMyParam.value / 1200.0f);
+
+Degrés (0-360°) vers ratio (0.0-1.0) :
+  float phase = kMyParam.value / 360.0f;
+
+Valeur bipolaire (-100%..+100%) vers ratio (-1.0..1.0) :
+  float bipolar = kMyParam.value / 100.0f;  // reste négatif si nécessaire
+
+🎮 INTERACTION UTILISATEUR
+────────────────────────────────────────────────────────────────────────────
+
+1. Naviguer au menu → sélectionner un paramètre numérique
+2. Appuyer sur MENU_SW → ENTRÉE en mode édition
+   • ESP32 affiche "PARAM [1000 Hz] ▼ ▲"
+   • Encodeur MENU passe en mode modification
+
+3. Tourner encodeur MENU → MODIFICATION
+   • Valeur augmente/diminue
+   • Callback ApplyXxx() appelé
+   • Transmission ESP32 en temps réel
+
+4. Appuyer MENU_SW → CONFIRMATION
+   • Valeur conservée
+   • Sortie du mode édition
+   • Retour au menu normal
+
+5. OU Appuyer HOME → ANNULATION
+   • Valeur revient à l'original
+   • Sortie du mode édition
+
+🔍 CHECKLIST DE COMPILATION
+────────────────────────────────────────────────────────────────────────────
+
+✓ Chaque NumericParam a un nom unique
+✓ Chaque NumericParam pointeur existe dans MenuNode
+✓ Chaque fonction ApplyXxx() est définie
+✓ Chaque MenuNode pointe vers un callback valide (nullptr ou ApplyXxx)
+✓ Tous les menuCount = sizeof(...) / sizeof(...) sont corrects
+✓ Pas de kBpmParam dupliqué (l'ancien est remplacé)
+
+🚨 ERREURS COURANTES
+────────────────────────────────────────────────────────────────────────────
+
+Erreur : "redeclaration of 'kBpmParam'"
+Cause : Deux déclarations de kBpmParam
+Fix : Supprimer l'ancienne (ligne 258), garder la nouvelle
+
+Erreur : "undefined reference to 'ApplyMyParam'"
+Cause : La fonction n'existe pas ou est commentée
+Fix : Vérifier que la fonction est déclarée AVANT le MenuNode qui l'utilise
+
+Erreur : "member initialization is out of order"
+Cause : Les champs du MenuNode ne sont pas dans le bon ordre
+Fix : Vérifier l'ordre : label, color, children, childCount, onSelect, selectedIndex, numeric
+
+Menu n'affiche pas de paramètre éditable
+Cause : .numeric = nullptr au lieu de &kXxxParam
+Fix : Ajouter .numeric = &kXxxParam à la fin du MenuNode
+
+Paramètre n'a aucun effet
+Cause : La fonction ApplyXxx() est vide ou ne fait rien
+Fix : Implémenter ApplyXxx() avec // synth.SetSomething(...)
+
+📊 PARAMÈTRES STANDARDS
+────────────────────────────────────────────────────────────────────────────
+
+// Temps (ms)        [min, max, step, initial, unit]
+{ 1, 5000, 10, 50, "ms" }           // Attack
+{ 1, 5000, 10, 200, "ms" }          // Decay
+{ 1, 5000, 10, 300, "ms" }          // Release
+
+// Fréquence (Hz)
+{ 20, 20000, 50, 1000, "Hz" }       // Cutoff, LFO rate
+{ 1, 500, 1, 10, "Hz" }             // LFO
+
+// Pitch (semitones)
+{ -24, 24, 1, 0, "st" }             // Coarse, Fine
+
+// Pourcentage
+{ 0, 100, 1, 50, "%" }              // Volume, Resonance, Dry/Wet
+{ 0, 100, 5, 0, "%" }               // Drive (pas plus rapide)
+
+// Bipolaire (±100%)
+{ -100, 100, 5, 0, "%" }            // Envelope modulation
+
+// Degrees
+{ 0, 360, 5, 0, "°" }               // LFO phase
+
+// Canal MIDI
+{ 1, 16, 1, 1, "ch" }               // MIDI Channel
+
+// BPM
+{ 1, 200, 1, 120, "BPM" }           // Tempo
+
+📱 ENVOI AU ESP32
+────────────────────────────────────────────────────────────────────────────
+
+Pendant l'édition (toutes les 50-100ms) :
+  hw.PrintLine("EDIT,VAL=%ld,MIN=%ld,MAX=%ld,UNIT=%s",
+               kMyParam.value,
+               kMyParam.minValue,
+               kMyParam.maxValue,
+               kMyParam.unit ? kMyParam.unit : "");
+
+Le ESP32 analyse ce message et affiche :
+  "PARAM [5000 Hz] ▼ ▲"
+
+💡 ASTUCES PRATIQUES
+────────────────────────────────────────────────────────────────────────────
+
+1. Tester d'abord avec le BPM existant
+2. Copier la structure d'un paramètre existant
+3. Compiler souvent (révèle les erreurs tôt)
+4. Utiliser FindAndReplace pour remplacer les MenuNode[]
+5. Documenter chaque paramètre ajouté
+6. Tester l'annulation avec HOME
+7. Vérifier l'affichage ESP32 en même temps
+
+🎯 FLUX COMPLET D'INTÉGRATION (15-20 min)
+────────────────────────────────────────────────────────────────────────────
+
+0. Sauvegarder le main.cpp courant
+1. Ouvrir COPY_PASTE_CODE.cpp
+2. Copier BLOC 1 → coller après ligne 258
+3. Copier BLOC 2 → coller après ApplyWaveform()
+4. Copier BLOC 3 → remplacer les 10 MenuNode[]
+5. Vérifier avec grep (kBpmParam n'apparaît qu'une fois)
+6. Compiler : cd daisy/build && make
+7. Flasher
+8. Tester : naviguer PLAY → BPM → MENU_SW → tourner → confirmer
+9. Tester annulation : HOME en mode édition
+10. Vérifier une autre catégorie (VCF → Cutoff)
+
+✅ SUCCÈS = Menu complètement fonctionnel, tous les paramètres éditables
+
+════════════════════════════════════════════════════════════════════════════
+
+📚 Fichiers de référence :
+  COPY_PASTE_CODE.cpp ................. Code prêt à copier-coller
+  IMPLEMENTATION_SUMMARY.md ........... Checklist complète
+  NUMERIC_INPUTS_COMPLETE.cpp ........ Version détaillée
+  MENU_TREE_VISUALIZATION.cpp ........ Arborescence + flux utilisateur
+  INTEGRATION_GUIDE.md ............... Guide étape par étape

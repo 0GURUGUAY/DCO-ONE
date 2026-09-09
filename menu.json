@@ -1,0 +1,281 @@
+{
+  "project": "Round Display UI Synth",
+  "display": {
+    "type": "Round Touch",
+    "diameter_inch": 1.75,
+    "resolution_px": 360,
+    "ui_modes": {
+      "main_menu": "RadialCarousel",
+      "submenu": "CurvedList",
+      "parameter_edit": "RingGauge"
+    }
+  },
+  "main_menus": [
+    {
+      "id": 1,
+      "key": "PLAY",
+      "title": "Mode Play & Auto",
+      "icon": "icon_play",
+      "color": "#FF0055",
+      "submenus": [
+        { 
+          "id": "play_bpm", 
+          "label": "BPM", 
+          "type": "INT", 
+          "min": 1, 
+          "max": 200, 
+          "step": 1, 
+          "default": 120, 
+          "unit": "BPM" 
+        },
+        { 
+          "id": "play_root", 
+          "label": "Root", 
+          "type": "ENUM", 
+          "options": [
+            "C",
+            "C#",
+            "D",
+            "D#",
+            "E ",
+            "F ",
+            "F#",
+            "G ",
+            "G#",
+            "A",
+            "A#",
+            "B"
+          ], 
+          "default": 9 
+        },
+        { 
+          "id": "play_scale", 
+          "label": "Scale", 
+          "type": "ENUM", 
+          "options": [
+            "M",
+            "m",
+            "m harm",
+            "m melo",
+            "Pent M",
+            "Pent m",
+            "Blues",
+            "Chrom"
+          ], 
+          "default": 0 
+        },
+        { 
+          "id": "play_chords", 
+          "label": "Chords", 
+          "type": "ENUM", 
+          "options": [
+            "Mono",
+            "Triad",
+            "7 dom",
+            "M7",
+            "m7",
+            "Sus2",
+            "Sus4",
+            "Dim",
+            "Augm",
+            "Power"
+          ], 
+          "default": 0 
+        },
+        { 
+          "id": "play_auto", 
+          "label": "Auto", 
+          "type": "INT", 
+          "min": 0, 
+          "max": 16, 
+          "step": 1, 
+          "default": 0, 
+          "unit": "steps" 
+        },
+        { 
+          "id": "play_octaves", 
+          "label": "Oct", 
+          "type": "INT", 
+          "min": -24, 
+          "max": 24, 
+          "step": 1, 
+          "default": 0, 
+          "unit": "st" 
+        },
+        { 
+          "id": "play_poly_steps", 
+          "label": "Step", 
+          "type": "INT", 
+          "min": 1, 
+          "max": 32, 
+          "step": 1, 
+          "default": 16, 
+          "unit": "steps" 
+        },
+        { 
+          "id": "play_poly_div", 
+          "label": "Div", 
+          "type": "ENUM", 
+          "options": [
+            "1/1",
+            "1/2",
+            "1/4",
+            "1/4T",
+            "1/8",
+            "1/8T",
+            "1/16",
+            "1/16T",
+            "1/32"
+          ], 
+          "default": 6 
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "key": "OSC",
+      "title": "Oscillateur",
+      "icon": "icon_vco",
+      "color": "#FF6B00",
+      "submenus": [
+        { "id": "osc_wave", "label": "Form", "type": "ENUM", "options": ["Saw", "Pulse", "Tri", "Sin", "Wave"], "default": 0 },
+        { "id": "osc_coarse", "label": "Coarse", "type": "INT", "min": -24, "max": 24, "step": 1, "default": 0, "unit": "st" },
+        { "id": "osc_fine", "label": "Fine", "type": "INT", "min": -100, "max": 100, "step": 1, "default": 0, "unit": "cents" },
+        { "id": "osc_pw", "label": "Pulse", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+        { "id": "osc_sub", "label": "Sub-Osc", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" },
+        { "id": "osc_sync", "label": "Hard", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 0, "unit": "%" }
+      ]
+    },
+    {
+      "id": 3,
+      "key": "VCF",
+      "title": "Filter",
+      "icon": "icon_vcf",
+      "color": "#00E5FF",
+      "submenus": [
+        { "id": "vcf_type", "label": "Filter", "type": "ENUM", "options": ["LP24", "LP12", "BP12", "HP12", "NOTCH"], "default": 0 },
+        { "id": "vcf_cutoff", "label": "Cutoff", "type": "INT", "min": 20, "max": 20000, "step": 50, "default": 5000, "unit": "Hz" },
+        { "id": "vcf_res", "label": "Resonance", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" },
+        { "id": "vcf_keytrack", "label": "Key", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+        { "id": "vcf_drive", "label": "Drive", "type": "INT", "min": 0, "max": 100, "step": 5, "default": 0, "unit": "%" },
+        { "id": "vcf_env_amt", "label": "Env", "type": "INT", "min": -100, "max": 100, "step": 5, "default": 0, "unit": "%" }
+      ]
+    },
+    {
+      "id": 4,
+      "key": "ENV1",
+      "title": "Env Amp",
+      "icon": "icon_env",
+      "color": "#39FF14",
+      "submenus": [
+        { "id": "env1_attack", "label": "Attack", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 50, "unit": "ms" },
+        { "id": "env1_decay", "label": "Decay", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 200, "unit": "ms" },
+        { "id": "env1_sustain", "label": "Sustain", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 80, "unit": "%" },
+        { "id": "env1_release", "label": "Release", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 300, "unit": "ms" },
+        { "id": "env1_vel_sens", "label": "Velocity", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 80, "unit": "%" }
+      ]
+    },
+    {
+      "id": 5,
+      "key": "ENV2",
+      "title": "Env Mod",
+      "icon": "icon_env2",
+      "color": "#CCFF00",
+      "submenus": [
+        { "id": "env2_attack", "label": "Attack", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 50, "unit": "ms" },
+        { "id": "env2_decay", "label": "Decay", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 200, "unit": "ms" },
+        { "id": "env2_sustain", "label": "Sustain", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+        { "id": "env2_release", "label": "Release", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 300, "unit": "ms" },
+        { "id": "env2_loop", "label": "Loop", "type": "ENUM", "options": ["OFF", "FREE", "SYNC"], "default": 0 }
+      ]
+    },
+    {
+      "id": 6,
+      "key": "LFO",
+      "title": "LFO",
+      "icon": "icon_lfo",
+      "color": "#FF007F",
+      "submenus": [
+        { "id": "lfo1_shape", "label": "1 Shape", "type": "ENUM", "options": ["Sin", "Tri", "Saw", "Sq", "S&H", "Rnd"], "default": 0 },
+        { "id": "lfo1_rate", "label": "1 Rate", "type": "INT", "min": 1, "max": 500, "step": 1, "default": 10, "unit": "Hz" },
+        { "id": "lfo1_sync", "label": "1 Sync", "type": "ENUM", "options": ["FREE", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32"], "default": 0 },
+        { "id": "lfo1_amp", "label": "1 Amp", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+        { "id": "lfo1_phase", "label": "1 Phase", "type": "INT", "min": 0, "max": 360, "step": 5, "default": 0, "unit": "°" },
+        { "id": "lfo2_shape", "label": "2 Shape", "type": "ENUM", "options": ["Sin", "Tri", "Saw", "Sq", "S&H", "Rnd"], "default": 1 },
+        { "id": "lfo2_rate", "label": "2 Rate", "type": "INT", "min": 1, "max": 500, "step": 1, "default": 8, "unit": "Hz" },
+        { "id": "lfo2_sync", "label": "2 Sync", "type": "ENUM", "options": ["FREE", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32"], "default": 0 },
+        { "id": "lfo2_amp", "label": "2 Amp", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 40, "unit": "%" },
+        { "id": "lfo2_phase", "label": "2 Phase", "type": "INT", "min": 0, "max": 360, "step": 5, "default": 180, "unit": "°" }
+      ]
+    },
+    {
+      "id": 7,
+      "key": "MATRIX",
+      "title": "Matrice",
+      "icon": "icon_matrix",
+      "color": "#BD00FF",
+      "submenus": [
+        { "id": "mod1_src", "label": "Slot 1 Src", "type": "ENUM", "options": ["NONE", "LFO1", "LFO2", "ENV2", "VEL", "MODWHEEL", "CV1"], "default": 1 },
+        { "id": "mod1_dst", "label": "Slot 1 Dst", "type": "ENUM", "options": ["NONE", "CUTOFF", "PITCH", "PW", "DRIVE", "LFO_RATE"], "default": 1 },
+        { "id": "mod1_amt", "label": "Slot 1 Amt", "type": "INT", "min": -100, "max": 100, "step": 5, "default": 0, "unit": "%" },
+        { "id": "mod2_src", "label": "Slot 2 Src", "type": "ENUM", "options": ["NONE", "LFO1", "LFO2", "ENV2", "VEL", "MODWHEEL", "CV1"], "default": 0 },
+        { "id": "mod2_dst", "label": "Slot 2 Dst", "type": "ENUM", "options": ["NONE", "CUTOFF", "PITCH", "PW", "DRIVE", "LFO_RATE"], "default": 0 },
+        { "id": "mod2_amt", "label": "Slot 2 Amt", "type": "INT", "min": -100, "max": 100, "step": 5, "default": 0, "unit": "%" }
+      ]
+    },
+    {
+      "id": 8,
+      "key": "FX",
+      "title": "Effects",
+      "icon": "icon_fx",
+      "color": "#00FF66",
+      "submenus": [
+        { "id": "fx_type", "label": "Effect Type", "type": "ENUM", "options": ["Off", "Reverb", "Delay", "Chorus", "BitCrusher"], "default": 1 },
+        { "id": "fx_mix", "label": "Dry/Wet", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+        { "id": "fx_p1", "label": "Time/Decay", "type": "INT", "min": 10, "max": 5000, "step": 50, "default": 500, "unit": "ms" },
+        { "id": "fx_p2", "label": "FB/Tone", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" }
+      ]
+    },
+    {
+      "id": 9,
+      "key": "PRESETS",
+      "title": "Patches",
+      "icon": "icon_preset",
+      "color": "#FF00AA",
+      "submenus": [
+        { "id": "patch_load", "label": "Load Patch", "type": "INT", "min": 1, "max": 128, "step": 1, "default": 1, "unit": "" },
+        { "id": "patch_save", "label": "Save Patch", "type": "INT", "min": 1, "max": 128, "step": 1, "default": 1, "unit": "" },
+        { "id": "patch_bank", "label": "Bank Select", "type": "ENUM", "options": ["BANK A", "BANK B", "BANK C", "USER"], "default": 0 },
+        { "id": "patch_init", "label": "Init Sound", "type": "ACTION", "action_id": "CMD_INIT_PATCH" }
+      ]
+    },
+    {
+      "id": 10,
+      "key": "MIDI",
+      "title": "MIDI",
+      "icon": "icon_midi",
+      "color": "#FFB700",
+      "submenus": [
+        { "id": "midi_chan", "label": "MIDI Channel", "type": "INT", "min": 1, "max": 16, "step": 1, "default": 1, "unit": "" },
+        { "id": "clock_src", "label": "Clock Source", "type": "ENUM", "options": ["INTERNAL", "MIDI USB", "MIDI DIN", "CV CLOCK"], "default": 0 },
+        { "id": "pitch_bend", "label": "Bend Range", "type": "INT", "min": 1, "max": 24, "step": 1, "default": 2, "unit": "st" }
+      ]
+    },
+    {
+      "id": 11,
+      "key": "SYSTEM",
+      "title": "Sys",
+      "icon": "icon_sys",
+      "color": "#888888",
+      "submenus": [
+        { "id": "sys_bright", "label": "Luminosite", "type": "INT", "min": 10, "max": 100, "step": 1, "default": 80, "unit": "%" },
+        { "id": "sys_sleep", "label": "Mise en veille", "type": "ENUM", "options": ["OFF", "1 MIN", "5 MIN", "15 MIN"], "default": 1 },
+        { "id": "sys_sens", "label": "Sensibilite", "type": "ENUM", "options": ["FAIBLE", "MOYENNE", "ELEVEE"], "default": 1 },
+        { "id": "sys_rate", "label": "Sample Rate", "type": "ENUM", "options": ["48 kHz", "96 kHz"], "default": 0 },
+        { "id": "sys_volume", "label": "Volume", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 100, "unit": "%" },
+        { "id": "sys_440hz", "label": "440Hz", "type": "ACTION", "action_id": "CMD_440HZ" },
+        { "id": "sys_diag", "label": "Test Hardware", "type": "ACTION", "action_id": "CMD_TEST_HW" }
+      ]
+    }
+  ]
+}

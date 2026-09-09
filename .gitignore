@@ -1,0 +1,26 @@
+# Build outputs
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.o
+*.a
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Project backups
+backup/
+backup_*/
