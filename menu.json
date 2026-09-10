@@ -138,12 +138,23 @@
       "icon": "icon_vco",
       "color": "#FF6B00",
       "submenus": [
-        { "id": "osc_wave", "label": "Form", "type": "ENUM", "options": ["Saw", "Pulse", "Tri", "Sin", "Wave"], "default": 0 },
+        { "id": "osc_wave", "label": "Form", "type": "ENUM", "options": ["Saw", "Pulse", "Tri", "Sin", "FM"], "default": 0 },
         { "id": "osc_coarse", "label": "Coarse", "type": "INT", "min": -24, "max": 24, "step": 1, "default": 0, "unit": "st" },
         { "id": "osc_fine", "label": "Fine", "type": "INT", "min": -100, "max": 100, "step": 1, "default": 0, "unit": "cents" },
         { "id": "osc_pw", "label": "Pulse", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
         { "id": "osc_sub", "label": "Sub-Osc", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" },
-        { "id": "osc_sync", "label": "Hard", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 0, "unit": "%" }
+        { "id": "osc_sync", "label": "Hard", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 0, "unit": "%" },
+        {
+          "id": "osc_fm",
+          "label": "FM",
+          "type": "SUBMENU",
+          "submenus": [
+            { "id": "osc_fm_amt", "label": "Amount", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 0, "unit": "%" },
+            { "id": "osc_fm_ratio", "label": "Ratio", "type": "INT", "min": 1, "max": 32, "step": 1, "default": 2, "unit": "x" },
+            { "id": "osc_fm_ratio_fine", "label": "Ratio Fine", "type": "INT", "min": -50, "max": 50, "step": 1, "default": 0, "unit": "%" },
+            { "id": "osc_fm_modwave", "label": "Mod Wave", "type": "ENUM", "options": ["Sin", "Tri", "Saw", "Square"], "default": 0 }
+          ]
+        }
       ]
     },
     {
@@ -157,7 +168,7 @@
         { "id": "vcf_cutoff", "label": "Cutoff", "type": "INT", "min": 20, "max": 20000, "step": 50, "default": 5000, "unit": "Hz" },
         { "id": "vcf_res", "label": "Resonance", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" },
         { "id": "vcf_keytrack", "label": "Key", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
-        { "id": "vcf_drive", "label": "Drive", "type": "INT", "min": 0, "max": 100, "step": 5, "default": 0, "unit": "%" },
+        { "id": "vcf_drive", "label": "Drive", "type": "INT", "min": 0, "max": 100, "step": 5, "default": 100, "unit": "%" },
         { "id": "vcf_env_amt", "label": "Env", "type": "INT", "min": -100, "max": 100, "step": 5, "default": 0, "unit": "%" }
       ]
     },

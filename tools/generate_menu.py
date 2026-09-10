@@ -104,6 +104,9 @@ def param_name(item_id: str) -> str:
         "osc_pw": "kOscPulseParam",
         "osc_sub": "kOscSubParam",
         "osc_sync": "kOscHardParam",
+        "osc_fm_amt": "kOscFmAmtParam",
+        "osc_fm_ratio": "kOscFmRatioParam",
+        "osc_fm_ratio_fine": "kOscFmRatioFineParam",
         "vcf_cutoff": "kVcfCutoffParam",
         "vcf_res": "kVcfResonanceParam",
         "vcf_keytrack": "kVcfKeyParam",
@@ -147,6 +150,10 @@ def apply_callback_name(item_id: str) -> str:
         "osc_pw": "ApplyOscPulse",
         "osc_sub": "ApplyOscSub",
         "osc_sync": "ApplyOscHard",
+        "osc_fm_amt": "ApplyOscFmAmt",
+        "osc_fm_ratio": "ApplyOscFmRatio",
+        "osc_fm_ratio_fine": "ApplyOscFmRatioFine",
+        "osc_fm_modwave": "ApplyOscFmModWave",
         "vcf_type": "ApplyVcfType",
         "vcf_cutoff": "ApplyVcfCutoff",
         "vcf_res": "ApplyVcfResonance",
@@ -161,10 +168,14 @@ def apply_callback_name(item_id: str) -> str:
         "env2_decay": "ApplyEnv2Decay",
         "env2_sustain": "ApplyEnv2Sustain",
         "env2_release": "ApplyEnv2Release",
+        "lfo1_shape": "ApplyLfo1Shape",
         "lfo1_rate": "ApplyLfo1Rate",
+        "lfo1_sync": "ApplyLfo1Sync",
         "lfo1_amp": "ApplyLfo1Amp",
         "lfo1_phase": "ApplyLfo1Phase",
+        "lfo2_shape": "ApplyLfo2Shape",
         "lfo2_rate": "ApplyLfo2Rate",
+        "lfo2_sync": "ApplyLfo2Sync",
         "lfo2_amp": "ApplyLfo2Amp",
         "lfo2_phase": "ApplyLfo2Phase",
         "mod1_amt": "ApplyMatSlot1Amt",
@@ -181,13 +192,6 @@ def apply_callback_name(item_id: str) -> str:
     return mapping.get(item_id)
 
 
-def default_initial_selection(item: dict) -> int:
-    """Initial selectedIndex for a node that has children."""
-    if item.get("type") == "ENUM":
-        return item.get("default", 0)
-    return 0
-
-
 def generate_daisy(data: dict) -> str:
     lines: list[str] = [
         "// Auto-generated from menu.json by tools/generate_menu.py",
@@ -197,8 +201,6 @@ def generate_daisy(data: dict) -> str:
         "// Menu content mirrored from menu.json (repo root).",
         "// =============================================================================",
     ]
-
-    numeric_params: list[tuple[str, dict, str]] = []  # (varname, item, category)
 
     def emit_options(name: str, options: list[str], color: str = "COLOR_DEFAULT") -> str:
         array_name = f"k{name}Options"
@@ -210,38 +212,38 @@ def generate_daisy(data: dict) -> str:
         lines.append(f"static constexpr uint8_t {count_name} = sizeof({array_name}) / sizeof({array_name}[0]);\n")
         return array_name, count_name
 
-    for cat in data["main_menus"]:
-        cat_key = cat["key"]
-        color = COLOR_ENUM[cat_key]
-        lines.append(f"\n// ---- {cat_key}: {cat.get('title', '')} ----")
+    def nested_array_name(parent_array_name: str, label: str) -> str:
+        base = parent_array_name
+        if base.endswith("Submenu"):
+            base = base[: -len("Submenu")]
+        suffix = to_c_name(label).replace("_", "").capitalize()
+        return f"{base}{suffix}Submenu"
 
-        children_refs: list[tuple[str, str, str, str, str]] = []
+    def emit_item_array(array_name: str, cat_key: str, items: list[dict]) -> tuple[str, str]:
+        """Recursively emit a MenuNode array for `items` (supports nested
+        "SUBMENU" items, e.g. OSC > FM). Returns (array_name, count_name)."""
+        children_refs: list[tuple[str, str, str, str, str]] = []  # label, arr, cnt, on_select, param_ptr
+        local_numeric_params: list[tuple[str, dict]] = []
 
-        for item in cat["submenus"]:
+        for item in items:
             item_id = item.get("id", "")
             label = item.get("label", "")
             itype = item.get("type", "")
             sanitized = to_c_name(f"{cat_key}_{item_id}")
 
-            if itype == "ENUM":
+            if itype == "SUBMENU":
+                nested_name = nested_array_name(array_name, label)
+                nested_arr, nested_cnt = emit_item_array(nested_name, cat_key, item["submenus"])
+                on_select = apply_callback_name(item_id) or "nullptr"
+                children_refs.append((label, nested_arr, nested_cnt, on_select, "nullptr"))
+            elif itype == "ENUM":
                 arr, cnt = emit_options(sanitized, item["options"])
                 on_select = apply_callback_name(item_id) or "nullptr"
-                param_ptr = "nullptr"
-                children_refs.append((label, arr, cnt, on_select, param_ptr))
-            elif itype in ("INT", "FLOAT"):
+                children_refs.append((label, arr, cnt, on_select, "nullptr"))
+            elif itype in ("INT", "FLOAT", "TOGGLE"):
                 varname = param_name(item_id)
                 if varname:
-                    numeric_params.append((varname, item, cat_key))
-                    param_ptr = f"&{varname}"
-                else:
-                    param_ptr = "nullptr"
-                on_select = apply_callback_name(item_id) or "nullptr"
-                children_refs.append((label, "nullptr", "0", on_select, param_ptr))
-            elif itype == "TOGGLE":
-                # Treated as INT 0/1 for now; may be refined later.
-                varname = param_name(item_id)
-                if varname:
-                    numeric_params.append((varname, item, cat_key))
+                    local_numeric_params.append((varname, item))
                     param_ptr = f"&{varname}"
                 else:
                     param_ptr = "nullptr"
@@ -251,10 +253,10 @@ def generate_daisy(data: dict) -> str:
                 on_select = apply_callback_name(item_id) or "nullptr"
                 children_refs.append((label, "nullptr", "0", on_select, "nullptr"))
 
-        # Numeric params first
-        # Numeric params first
+        # Numeric params belonging to this level, declared before the array
+        # below so it can take their address.
         emitted_ids = set()
-        for varname, item, _ in numeric_params:
+        for varname, item in local_numeric_params:
             if varname in emitted_ids:
                 continue
             emitted_ids.add(varname)
@@ -266,8 +268,24 @@ def generate_daisy(data: dict) -> str:
             lines.append(
                 f'static NumericParam {varname} = {{ {min_v}, {max_v}, {step_v}, {default_v}, "{escape_c_str(unit)}" }};'
             )
-        # Clear per-category so we don't redeclare
-        numeric_params.clear()
+
+        count_name = f"{array_name}Count"
+        lines.append(f"\nstatic MenuNode {array_name}[] = {{")
+        for label, arr, cnt, on_select, param_ptr in children_refs:
+            # NOTE: always 0 regardless of item type, matching this generator's
+            # long-standing behavior (an ENUM's JSON "default" is not read here).
+            init_sel = 0
+            lines.append(
+                f'    {{ "{escape_c_str(label)}", COLOR_DEFAULT, {arr}, {cnt}, {on_select}, {init_sel}, {param_ptr} }},'
+            )
+        lines.append("};")
+        lines.append(f"static constexpr uint8_t {count_name} = sizeof({array_name}) / sizeof({array_name}[0]);\n")
+        return array_name, count_name
+
+    for cat in data["main_menus"]:
+        cat_key = cat["key"]
+        color = COLOR_ENUM[cat_key]
+        lines.append(f"\n// ---- {cat_key}: {cat.get('title', '')} ----")
 
         sub_name = f"k{cat_key.title()}Submenu" if cat_key != "LFO" else "kLfoSubmenu"
         if cat_key == "MATRIX":
@@ -291,15 +309,7 @@ def generate_daisy(data: dict) -> str:
         if cat_key == "PLAY":
             sub_name = "kPlaySubmenu"
 
-        count_name = f"{sub_name}Count"
-        lines.append(f"\nstatic MenuNode {sub_name}[] = {{")
-        for label, arr, cnt, on_select, param_ptr in children_refs:
-            init_sel = default_initial_selection({"type": "ENUM"} if cnt != "0" else {})
-            lines.append(
-                f'    {{ "{escape_c_str(label)}", COLOR_DEFAULT, {arr}, {cnt}, {on_select}, {init_sel}, {param_ptr} }},'
-            )
-        lines.append("};")
-        lines.append(f"static constexpr uint8_t {count_name} = sizeof({sub_name}) / sizeof({sub_name}[0]);\n")
+        emit_item_array(sub_name, cat_key, cat["submenus"])
 
     # Root menu
     lines.append("\n// Root menu (main wheel), same order as menu.json's main_menus")
@@ -352,23 +362,45 @@ def generate_esp32(data: dict) -> str:
         lines.append(f"static const int {count_name} = sizeof({array_name}) / sizeof({array_name}[0]);\n")
         return array_name, count_name
 
-    for cat in data["main_menus"]:
-        cat_key = cat["key"]
-        lines.append(f"\n// ---- {cat_key}: {cat.get('title', '')} ----")
+    def nested_array_name(parent_array_name: str, label: str) -> str:
+        base = parent_array_name
+        if base.endswith("Submenu"):
+            base = base[: -len("Submenu")]
+        suffix = to_c_name(label).replace("_", "").capitalize()
+        return f"{base}{suffix}Submenu"
 
+    def emit_item_array(array_name: str, cat_key: str, items: list[dict]) -> tuple[str, str]:
+        """Mirrors generate_daisy's recursive SUBMENU support (purely visual
+        here: no onSelect/numeric fields on the ESP32 side)."""
         children_refs: list[tuple[str, str, str]] = []
 
-        for item in cat["submenus"]:
+        for item in items:
             item_id = item.get("id", "")
             label = item.get("label", "")
             itype = item.get("type", "")
             sanitized = to_c_name(f"{cat_key}_{item_id}")
 
-            if itype == "ENUM":
+            if itype == "SUBMENU":
+                nested_name = nested_array_name(array_name, label)
+                nested_arr, nested_cnt = emit_item_array(nested_name, cat_key, item["submenus"])
+                children_refs.append((label, nested_arr, nested_cnt))
+            elif itype == "ENUM":
                 arr, cnt = emit_options(sanitized, item["options"])
                 children_refs.append((label, arr, cnt))
             else:
                 children_refs.append((label, "nullptr", "0"))
+
+        count_name = f"{array_name}Count"
+        lines.append(f"\nstatic const MenuNode {array_name}[] = {{")
+        for label, arr, cnt in children_refs:
+            lines.append(f'    {{ "{escape_c_str(label)}", 0, {arr}, {cnt} }},')
+        lines.append("};")
+        lines.append(f"static const int {count_name} = sizeof({array_name}) / sizeof({array_name}[0]);\n")
+        return array_name, count_name
+
+    for cat in data["main_menus"]:
+        cat_key = cat["key"]
+        lines.append(f"\n// ---- {cat_key}: {cat.get('title', '')} ----")
 
         sub_name = f"k{cat_key.title()}Submenu"
         name_fixes = {
@@ -385,12 +417,7 @@ def generate_esp32(data: dict) -> str:
             "PLAY": "kPlaySubmenu",
         }
         sub_name = name_fixes.get(cat_key, sub_name)
-        count_name = f"{sub_name}Count"
-        lines.append(f"\nstatic const MenuNode {sub_name}[] = {{")
-        for label, arr, cnt in children_refs:
-            lines.append(f'    {{ "{escape_c_str(label)}", 0, {arr}, {cnt} }},')
-        lines.append("};")
-        lines.append(f"static const int {count_name} = sizeof({sub_name}) / sizeof({sub_name}[0]);\n")
+        emit_item_array(sub_name, cat_key, cat["submenus"])
 
     # Root menu
     lines.append("\n// Root menu (main wheel), same order as menu.json's main_menus")

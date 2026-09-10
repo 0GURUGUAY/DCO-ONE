@@ -51,6 +51,8 @@ set(SOURCES
     src/main.cpp
     src/oscillator.cpp
     src/filter.cpp
+    src/lfo.cpp
+    src/fm.cpp
     src/input_manager.cpp
     src/midi.cpp
 )

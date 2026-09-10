@@ -61,6 +61,8 @@ static bool s_touch_ok = false;
 #define C_BLUE    RGB565_BLUE
 #define C_CYAN    RGB565_CYAN
 #define C_YELLOW  RGB565_YELLOW
+#define C_MAGENTA RGB565_MAGENTA
+#define C_PINK    0xFE19 // bright pink for poly FIXED steps
 #define C_WHITE   RGB565_WHITE
 #define C_ORANGE  0xFDA0
 #define C_DKGRAY  0x4208
@@ -142,11 +144,26 @@ static bool    s_status_playing = false;
 static int     s_status_note    = -1; // MIDI note currently sounding (-1 = none)
 static bool    s_status_t440    = false;
 
+// MIDI activity indicators (small arrows on the play hub). Decay timers
+// keep the icon lit briefly after each "MACT,IN=1"/"MACT,OUT=1" pulse
+// received from the host bridge.
+static bool    s_midi_in_active  = false;
+static bool    s_midi_out_active = false;
+static uint32_t s_midi_in_decay_ms  = 0;
+static uint32_t s_midi_out_decay_ms = 0;
+static constexpr uint32_t kMidiActivityDecayMs = 120;
+
 // ENV1 envelope parameters, driven by STAT frames from the Daisy
 static int32_t s_env1_attack  = 50;
 static int32_t s_env1_decay   = 200;
 static int32_t s_env1_sustain = 80;
 static int32_t s_env1_release = 300;
+
+// ENV2 envelope parameters, driven by EN2 frames from the Daisy
+static int32_t s_env2_attack  = 50;
+static int32_t s_env2_decay   = 200;
+static int32_t s_env2_sustain = 80;
+static int32_t s_env2_release = 300;
 
 // VCF parameters, driven by STAT frames from the Daisy
 static int32_t s_vcf_type      = 0;
@@ -155,6 +172,31 @@ static int32_t s_vcf_resonance = 0;
 static int32_t s_vcf_key       = 50;
 static int32_t s_vcf_drive     = 0;
 static int32_t s_vcf_env       = 0;
+
+// LFO1 parameters, driven by "LFO,LS=..,LR=..,LSY=..,LA=..,LP=.." frames
+// from the Daisy.
+static int32_t s_lfo1_shape = 0;
+static int32_t s_lfo1_rate  = 10;
+static int32_t s_lfo1_sync  = 0;
+static int32_t s_lfo1_amp   = 50;
+static int32_t s_lfo1_phase = 0;
+
+// LFO2 parameters, driven by "LF2,LS=..,LR=..,LSY=..,LA=..,LP=.." frames from
+// the Daisy.
+static int32_t s_lfo2_shape = 0;
+static int32_t s_lfo2_rate  = 10;
+static int32_t s_lfo2_sync  = 0;
+static int32_t s_lfo2_amp   = 50;
+static int32_t s_lfo2_phase = 0;
+
+// Matrix routing state, driven by "MAT,S1=..,D1=..,A1=..,S2=..,D2=..,A2=.."
+// frames from the Daisy (see SendPlayStatus in daisy/src/main.cpp).
+static int32_t s_mat1_src = 0;
+static int32_t s_mat1_dst = 0;
+static int32_t s_mat1_amt = 0;
+static int32_t s_mat2_src = 0;
+static int32_t s_mat2_dst = 0;
+static int32_t s_mat2_amt = 0;
 
 // Last values actually rendered, so repeated identical STAT heartbeats
 // (sent alongside every NAV frame) don't force a redundant full redraw.
@@ -168,9 +210,29 @@ static int32_t s_env1_attack_drawn    = -1;
 static int32_t s_env1_decay_drawn     = -1;
 static int32_t s_env1_sustain_drawn   = -1;
 static int32_t s_env1_release_drawn   = -1;
+static int32_t s_env2_attack_drawn    = -1;
+static int32_t s_env2_decay_drawn     = -1;
+static int32_t s_env2_sustain_drawn   = -1;
+static int32_t s_env2_release_drawn   = -1;
 static int32_t s_vcf_type_drawn      = -1;
 static int32_t s_vcf_cutoff_drawn    = -1;
 static int32_t s_vcf_resonance_drawn = -1;
+static int32_t s_lfo1_shape_drawn = -1;
+static int32_t s_lfo1_rate_drawn  = -1;
+static int32_t s_lfo1_sync_drawn  = -1;
+static int32_t s_lfo1_amp_drawn   = -1;
+static int32_t s_lfo1_phase_drawn = -1;
+static int32_t s_lfo2_shape_drawn = -1;
+static int32_t s_lfo2_rate_drawn  = -1;
+static int32_t s_lfo2_sync_drawn  = -1;
+static int32_t s_lfo2_amp_drawn   = -1;
+static int32_t s_lfo2_phase_drawn = -1;
+static int32_t s_mat1_src_drawn = -1;
+static int32_t s_mat1_dst_drawn = -1;
+static int32_t s_mat1_amt_drawn = -1;
+static int32_t s_mat2_src_drawn = -1;
+static int32_t s_mat2_dst_drawn = -1;
+static int32_t s_mat2_amt_drawn = -1;
 
 // Polymetric step wheel overlay, driven by "POLY,N=..,C=..,ST=..,DEG=..,PLAY=..,NOTE=.."
 // frames from the Daisy (see SendPolyState in daisy/src/main.cpp). Replaces
@@ -463,6 +525,57 @@ static void drawPlayStopIcon(int x, int y, int size, bool playing, uint16_t colo
         canvas->fillRect(x - size, y - size, size * 2, size * 2, color);
 }
 
+// Tiny MIDI activity arrows on the play hub: red left-pointing arrow for
+// MIDI IN, green right-pointing arrow for MIDI OUT. Placed just above the
+// transport PLAY/STOP block so they stay clearly inside the center hub.
+static void drawMidiActivityIcons(int cx, int cy)
+{
+    const int iconW   = 14;   // arrow width
+    const int iconH   = 12;   // arrow height
+    const int gap     = 6;
+    const int xBase   = cx - iconW - gap / 2;
+    const int yBase   = cy + 80; // above the PLAY/STOP row
+
+    uint32_t now = millis();
+    if (s_midi_in_active && (now - s_midi_in_decay_ms >= kMidiActivityDecayMs))
+        s_midi_in_active = false;
+    if (s_midi_out_active && (now - s_midi_out_decay_ms >= kMidiActivityDecayMs))
+        s_midi_out_active = false;
+
+    // Draw a small dark backing pill so the coloured arrows pop on any hub.
+    int pillW = iconW * 2 + gap + 8;
+    int pillH = iconH + 8;
+    int pillX = xBase - 4;
+    int pillY = yBase - iconH / 2 - 4;
+    if (s_midi_in_active || s_midi_out_active)
+    {
+        canvas->fillRoundRect(pillX, pillY, pillW, pillH, 4, 0x2104);
+    }
+
+    if (s_midi_in_active)
+    {
+        // Red arrow pointing left (incoming)
+        int ax = xBase + iconW;
+        canvas->fillTriangle(ax, yBase - iconH / 2,
+                             ax, yBase + iconH / 2,
+                             xBase, yBase, C_RED);
+        canvas->drawTriangle(ax, yBase - iconH / 2,
+                             ax, yBase + iconH / 2,
+                             xBase, yBase, C_BLACK);
+    }
+    if (s_midi_out_active)
+    {
+        // Green arrow pointing right (outgoing)
+        int bx = xBase + iconW + gap;
+        canvas->fillTriangle(bx, yBase - iconH / 2,
+                             bx, yBase + iconH / 2,
+                             bx + iconW, yBase, C_GREEN);
+        canvas->drawTriangle(bx, yBase - iconH / 2,
+                             bx, yBase + iconH / 2,
+                             bx + iconW, yBase, C_BLACK);
+    }
+}
+
 // Draws the shared center hub used by both the root menu wheel and the
 // polymetric wheel: BPM, currently-sounding MIDI note, root+scale, live
 // waveform and PLAY/STOP transport. When `showStepCount` is true (poly
@@ -545,6 +658,9 @@ static void drawStatusHub(int cx, int cy, bool showStepCount)
     canvas->setTextColor(stateColor);
     canvas->setCursor(startX + iconSize * 2 + gap - tx1, rowY - (int)th / 2 - ty1);
     canvas->print(stateLabel);
+
+    // MIDI IN/OUT activity arrows (only relevant in play mode)
+    drawMidiActivityIcons(cx, cy);
 }
 
 // Center hub variant used inside the ENV1 menu: a large ADSR shape plus the
@@ -590,6 +706,49 @@ static void drawEnvelopeHub(int cx, int cy, const char* label)
     }
 }
 
+// Center hub variant used inside the ENV2 menu: same ADSR hub as ENV1,
+// using ENV2's color and parameter state.
+static void drawEnvelope2Hub(int cx, int cy, const char* label)
+{
+    int16_t  tx1, ty1;
+    uint16_t tw, th;
+
+    // Category / parameter label at the top
+    canvas->setFont(&FreeSans12pt7b);
+    canvas->setTextColor(C_PALE_ENV2);
+    canvas->getTextBounds(label, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 110 - ty1);
+    canvas->print(label);
+
+    // Large ADSR shape in the center (slightly smaller to leave room for value)
+    drawEnvelopeShape(cx, cy - 18, 84, s_env2_attack, s_env2_decay, s_env2_sustain, s_env2_release, C_PALE_ENV2);
+
+    // Focused parameter value (big) and unit below the envelope
+    int32_t value = 0;
+    const char* unit = "";
+    if (strcmp(label, "Attack") == 0)       { value = s_env2_attack;  unit = "ms"; }
+    else if (strcmp(label, "Decay") == 0)   { value = s_env2_decay;   unit = "ms"; }
+    else if (strcmp(label, "Sustain") == 0) { value = s_env2_sustain; unit = "%"; }
+    else if (strcmp(label, "Release") == 0) { value = s_env2_release; unit = "ms"; }
+
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%ld", (long)value);
+    canvas->setFont(&FreeSans24pt7b);
+    canvas->setTextColor(C_WHITE);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 102 - ty1);
+    canvas->print(buf);
+
+    if (unit[0] != '\0')
+    {
+        canvas->setFont(&FreeSans12pt7b);
+        canvas->setTextColor(C_PALE_ENV2);
+        canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 138 - ty1);
+        canvas->print(unit);
+    }
+}
+
 // Full-screen edit view used for ENV1 numeric parameters: large envelope
 // preview plus the edited value, instead of the generic ring gauge.
 static void drawEnvelopeEditScreen(const char* label, int32_t value, int32_t minV, int32_t maxV, const char* unit)
@@ -628,6 +787,60 @@ static void drawEnvelopeEditScreen(const char* label, int32_t value, int32_t min
     {
         canvas->setFont(&FreeSans12pt7b);
         canvas->setTextColor(C_PALE_ENV1);
+        canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 200 - ty1);
+        canvas->print(unit);
+    }
+
+    // Bottom hint
+    canvas->setFont(&FreeSans9pt7b);
+    canvas->setTextColor(C_DKGRAY);
+    const char* hint = "PRESS TO VALIDATE";
+    canvas->getTextBounds(hint, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 210 - ty1);
+    canvas->print(hint);
+
+    canvas->flush();
+}
+
+// Full-screen edit view used for ENV2 numeric parameters: same layout as
+// ENV1, using ENV2's color and state.
+static void drawEnvelope2EditScreen(const char* label, int32_t value, int32_t minV, int32_t maxV, const char* unit)
+{
+    (void)minV;
+    (void)maxV;
+
+    canvas->fillScreen(C_BLACK);
+
+    const int cx = LCD_WIDTH / 2;
+    const int cy = LCD_HEIGHT / 2;
+
+    int16_t  tx1, ty1;
+    uint16_t tw, th;
+
+    // Parameter label at top
+    canvas->setFont(&FreeSans12pt7b);
+    canvas->setTextColor(C_PALE_ENV2);
+    canvas->getTextBounds(label, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 175 - ty1);
+    canvas->print(label);
+
+    // Large envelope preview
+    drawEnvelopeShape(cx, cy - 10, 165, s_env2_attack, s_env2_decay, s_env2_sustain, s_env2_release, C_PALE_ENV2);
+
+    // Edited value (big) and unit
+    char valBuf[16];
+    snprintf(valBuf, sizeof(valBuf), "%ld", (long)value);
+    canvas->setFont(&FreeSans24pt7b);
+    canvas->setTextColor(C_WHITE);
+    canvas->getTextBounds(valBuf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 155 - ty1);
+    canvas->print(valBuf);
+
+    if (unit != nullptr && unit[0] != '\0')
+    {
+        canvas->setFont(&FreeSans12pt7b);
+        canvas->setTextColor(C_PALE_ENV2);
         canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
         canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 200 - ty1);
         canvas->print(unit);
@@ -770,6 +983,196 @@ static void drawVcfHub(int cx, int cy, const char* label)
     canvas->print(buf);
 }
 
+// Illustrative (not sample-accurate) preview of ~1.5 cycles of an LFO shape,
+// stepping 8 discrete illustrative random levels for the S&H/Rnd shapes
+// (matches menu.json's lfo1_shape/lfo2_shape order: Sin, Tri, Saw, Sq, S&H,
+// Rnd). Generic over cx/cy/half-size/color so it can be reused for LFO2's
+// hub once that LFO is wired up on the Daisy side.
+static void drawLfoWaveform(int cx, int cy, int halfW, int halfH, int shapeIdx, float phaseDeg, uint16_t color)
+{
+    static const float kIllustrativeRandomSteps[8] = {
+        0.55f, -0.30f, 0.85f, -0.75f, 0.15f, -0.60f, 0.40f, -0.90f
+    };
+
+    const int   x0           = cx - halfW;
+    const int   x1           = cx + halfW;
+    const float cyclesShown  = 1.5f;
+    const float phaseNorm    = phaseDeg / 360.0f;
+    const int   strideX      = 3; // px per sample, keeps the redraw cheap
+
+    int  prevX = x0, prevY = cy;
+    bool first = true;
+    for (int x = x0; x <= x1; x += strideX)
+    {
+        float t     = (float)(x - x0) / (float)(x1 - x0); // 0..1 across the box
+        float phase = fmodf(t * cyclesShown + phaseNorm, 1.0f);
+        if (phase < 0.0f)
+            phase += 1.0f;
+
+        float v = 0.0f; // -1..1
+        switch (shapeIdx)
+        {
+            case 0: v = sinf(phase * 2.0f * (float)PI); break;                              // Sin
+            case 1: v = (phase < 0.5f) ? (4.0f * phase - 1.0f) : (3.0f - 4.0f * phase); break; // Tri
+            case 2: v = 2.0f * phase - 1.0f; break;                                          // Saw (ramp up)
+            case 3: v = (phase < 0.5f) ? 1.0f : -1.0f; break;                                 // Sq
+            case 4: v = kIllustrativeRandomSteps[(int)(phase * 8.0f) % 8]; break;              // S&H (stepped)
+            default: // Rnd -- smoother illustrative wander
+                v = sinf(phase * 2.0f * (float)PI * 3.3f) * 0.6f
+                  + sinf(phase * 2.0f * (float)PI * 1.7f + 1.0f) * 0.4f;
+                break;
+        }
+
+        int y = cy - (int)(v * halfH);
+        if (!first)
+            canvas->drawLine(prevX, prevY, x, y, color);
+        prevX = x;
+        prevY = y;
+        first = false;
+    }
+
+    canvas->drawRect(x0 - 2, cy - halfH - 2, (x1 - x0) + 4, halfH * 2 + 4, 0x8410);
+}
+
+// Center hub variant used inside the LFO menu for LFO1: the selected shape's
+// name, a live preview of its curve, and the Rate/Sync + Amount/Phase values.
+static void drawLfoHub(int cx, int cy, const char* label)
+{
+    (void)label;
+    int16_t  tx1, ty1;
+    uint16_t tw, th;
+
+    int shapeIdx = (s_lfo1_shape >= 0 && s_lfo1_shape < kLFO_lfo1_shapeOptionCount) ? s_lfo1_shape : 0;
+    const char* shapeLabel = kLFO_lfo1_shapeOptions[shapeIdx].label;
+
+    canvas->setFont(&FreeSans18pt7b);
+    canvas->setTextColor(C_PALE_LFO);
+    canvas->getTextBounds(shapeLabel, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 100 - ty1);
+    canvas->print(shapeLabel);
+
+    drawLfoWaveform(cx, cy - 8, 105, 58, shapeIdx, (float)s_lfo1_phase, C_PALE_LFO);
+
+    // Rate (or Sync division, when synced) below the curve
+    char buf[24];
+    int syncIdx = (s_lfo1_sync >= 0 && s_lfo1_sync < kLFO_lfo1_syncOptionCount) ? s_lfo1_sync : 0;
+    if (syncIdx > 0)
+        snprintf(buf, sizeof(buf), "%s", kLFO_lfo1_syncOptions[syncIdx].label);
+    else
+        snprintf(buf, sizeof(buf), "%ld Hz", (long)s_lfo1_rate);
+    canvas->setFont(&FreeSans12pt7b);
+    canvas->setTextColor(C_WHITE);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 96 - ty1);
+    canvas->print(buf);
+
+    // Amount (bottom-left) and Phase (bottom-right), same corner layout as VCF's cutoff/res
+    snprintf(buf, sizeof(buf), "AMT %ld%%", (long)s_lfo1_amp);
+    canvas->setFont(&FreeSans9pt7b);
+    canvas->setTextColor(C_PALE_LFO);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - 105 - tx1, cy + 125 - ty1);
+    canvas->print(buf);
+
+    snprintf(buf, sizeof(buf), "%ld deg", (long)s_lfo1_phase);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx + 105 - (int)tw - tx1, cy + 125 - ty1);
+    canvas->print(buf);
+}
+
+// Center hub variant used inside the LFO menu for LFO2: same layout as
+// LFO1, using LFO2's state and option arrays.
+static void drawLfo2Hub(int cx, int cy, const char* label)
+{
+    (void)label;
+    int16_t  tx1, ty1;
+    uint16_t tw, th;
+
+    int shapeIdx = (s_lfo2_shape >= 0 && s_lfo2_shape < kLFO_lfo2_shapeOptionCount) ? s_lfo2_shape : 0;
+    const char* shapeLabel = kLFO_lfo2_shapeOptions[shapeIdx].label;
+
+    canvas->setFont(&FreeSans18pt7b);
+    canvas->setTextColor(C_PALE_LFO);
+    canvas->getTextBounds(shapeLabel, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 100 - ty1);
+    canvas->print(shapeLabel);
+
+    drawLfoWaveform(cx, cy - 8, 105, 58, shapeIdx, (float)s_lfo2_phase, C_PALE_LFO);
+
+    // Rate (or Sync division, when synced) below the curve
+    char buf[24];
+    int syncIdx = (s_lfo2_sync >= 0 && s_lfo2_sync < kLFO_lfo2_syncOptionCount) ? s_lfo2_sync : 0;
+    if (syncIdx > 0)
+        snprintf(buf, sizeof(buf), "%s", kLFO_lfo2_syncOptions[syncIdx].label);
+    else
+        snprintf(buf, sizeof(buf), "%ld Hz", (long)s_lfo2_rate);
+    canvas->setFont(&FreeSans12pt7b);
+    canvas->setTextColor(C_WHITE);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 96 - ty1);
+    canvas->print(buf);
+
+    // Amount (bottom-left) and Phase (bottom-right)
+    snprintf(buf, sizeof(buf), "AMT %ld%%", (long)s_lfo2_amp);
+    canvas->setFont(&FreeSans9pt7b);
+    canvas->setTextColor(C_PALE_LFO);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - 105 - tx1, cy + 125 - ty1);
+    canvas->print(buf);
+
+    snprintf(buf, sizeof(buf), "%ld deg", (long)s_lfo2_phase);
+    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx + 105 - (int)tw - tx1, cy + 125 - ty1);
+    canvas->print(buf);
+}
+
+// Center hub variant used inside the MATRIX menu: shows the two existing
+// modulation routes as "Source > Destination" plus the amount for each slot.
+// Routes whose source is NONE are dimmed / shown as "-".
+static void drawMatrixHub(int cx, int cy)
+{
+    int16_t  tx1, ty1;
+    uint16_t tw, th;
+
+    // Title at the top
+    canvas->setFont(&FreeSans12pt7b);
+    canvas->setTextColor(C_PALE_MATRIX);
+    canvas->getTextBounds("ROUTES", 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 110 - ty1);
+    canvas->print("ROUTES");
+
+    auto drawRoute = [&](int slot, int srcIdx, int dstIdx, int amt, int y)
+    {
+        bool active = (srcIdx > 0 && srcIdx < kMATRIX_mod1_srcOptionCount);
+        const char* srcLabel = active ? kMATRIX_mod1_srcOptions[srcIdx].label : "-";
+        const char* dstLabel = (dstIdx > 0 && dstIdx < kMATRIX_mod1_dstOptionCount)
+                                   ? kMATRIX_mod1_dstOptions[dstIdx].label
+                                   : "-";
+
+        char routeBuf[32];
+        snprintf(routeBuf, sizeof(routeBuf), "%s > %s", srcLabel, dstLabel);
+
+        // Route line (e.g. "LFO1 > PITCH")
+        canvas->setFont(&FreeSans18pt7b);
+        canvas->setTextColor(active ? C_WHITE : C_DKGRAY);
+        canvas->getTextBounds(routeBuf, 0, 0, &tx1, &ty1, &tw, &th);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, y - ty1);
+        canvas->print(routeBuf);
+
+        // Amount below the route
+        char amtBuf[16];
+        snprintf(amtBuf, sizeof(amtBuf), "%+d%%", amt);
+        canvas->setFont(&FreeSans12pt7b);
+        canvas->setTextColor(active ? C_PALE_MATRIX : C_DKGRAY);
+        canvas->getTextBounds(amtBuf, 0, 0, &tx1, &ty1, &tw, &th);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, y + 28 - ty1);
+        canvas->print(amtBuf);
+    };
+
+    drawRoute(1, s_mat1_src, s_mat1_dst, (int)s_mat1_amt, cy - 38);
+    drawRoute(2, s_mat2_src, s_mat2_dst, (int)s_mat2_amt, cy + 56);
+}
+
 // Generic renderer used at every navigation depth: draws `parent`'s children
 // as a pie-wedge wheel (same format as the main menu), the `selectedIndex`
 // wedge highlighted, and `parent`'s own label in the decorative center hub
@@ -836,13 +1239,21 @@ static void drawMenuWheel(const MenuNode* parent, int selectedIndex)
 
     canvas->fillCircle(cx, cy, kWheelCenterRadius, C_BLACK);
     // Removed: canvas->drawCircle(cx, cy, kWheelCenterRadius, C_PALE_ACCENT);
-    bool in_env1 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kEnv1Submenu);
-    bool in_vcf  = (s_menu_depth >= 1 && s_menu_stack[1]->children == kVcfSubmenu);
+    bool in_env1   = (s_menu_depth >= 1 && s_menu_stack[1]->children == kEnv1Submenu);
+    bool in_env2   = (s_menu_depth >= 1 && s_menu_stack[1]->children == kEnv2Submenu);
+    bool in_vcf    = (s_menu_depth >= 1 && s_menu_stack[1]->children == kVcfSubmenu);
+    // LFO1 fields are indices 0..4, LFO2 fields are indices 5..9 inside
+    // kLfoSubmenu. Each group gets its own live curve hub.
+    bool in_lfo1   = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
+                      && selectedIndex >= 0 && selectedIndex < 5);
+    bool in_lfo2   = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
+                      && selectedIndex >= 5 && selectedIndex < 10);
+    bool in_matrix = (s_menu_depth >= 1 && s_menu_stack[1]->children == kMatrixSubmenu);
 
-    // Inside ENV1, the hub shows the focused ADSR parameter's integer value,
-    // so the hub label must be the selected child's label (Attack/Decay/...
-    // instead of the parent "ENV1").
-    if (in_env1 && selectedIndex >= 0 && selectedIndex < count)
+    // Inside ENV1/ENV2, the hub shows the focused ADSR parameter's integer
+    // value, so the hub label must be the selected child's label
+    // (Attack/Decay/... instead of the parent "ENV1"/"ENV2").
+    if ((in_env1 || in_env2) && selectedIndex >= 0 && selectedIndex < count)
         hubLabel = parent->children[selectedIndex].label;
     if (parent == &kRootNode)
     {
@@ -852,9 +1263,25 @@ static void drawMenuWheel(const MenuNode* parent, int selectedIndex)
     {
         drawEnvelopeHub(cx, cy, hubLabel);
     }
+    else if (in_env2)
+    {
+        drawEnvelope2Hub(cx, cy, hubLabel);
+    }
     else if (in_vcf)
     {
         drawVcfHub(cx, cy, hubLabel);
+    }
+    else if (in_lfo1)
+    {
+        drawLfoHub(cx, cy, hubLabel);
+    }
+    else if (in_lfo2)
+    {
+        drawLfo2Hub(cx, cy, hubLabel);
+    }
+    else if (in_matrix)
+    {
+        drawMatrixHub(cx, cy);
     }
     else
     {
@@ -979,10 +1406,10 @@ static void drawParamEditRing(const char* label, int32_t value, int32_t minV, in
 }
 
 // Polymetric step wheel: one dot per step around the ring (gray=off,
-// yellow=note, green=arpeggio, blue=chord), the edit cursor (encoder_main)
-// highlighted with a thick red ring, the playhead (running while PLAY)
-// highlighted with a cyan ring. Center hub shows the step count, the
-// currently-sounding MIDI note and the shared PLAY/STOP transport indicator.
+// yellow=note, green=arpeggio, blue=chord, pink=fixed), the edit cursor
+// (encoder_main) highlighted with a thick red ring, the playhead (running
+// while PLAY) highlighted with a cyan ring. Center hub shows the step count,
+// the currently-sounding MIDI note and the shared PLAY/STOP transport indicator.
 static void drawPolyWheel()
 {
     canvas->fillScreen(C_BLACK);
@@ -1005,6 +1432,7 @@ static void drawPolyWheel()
         if (state == '1') color = C_YELLOW;
         else if (state == '2') color = C_GREEN;
         else if (state == '3') color = C_BLUE;
+        else if (state == '4') color = C_PINK;
 
         bool isCursor   = (i == s_poly_cursor);
         bool isPlayhead = (i == s_poly_play);
@@ -1060,7 +1488,7 @@ void initDisplay()
     canvas->println(msg);
     
     canvas->setFont(&FreeSans12pt7b);
-    const char *subtitle = "Phase 3 - MIDI";
+    const char *subtitle = "Phase 4 - Matrice";
     canvas->getTextBounds(subtitle, 0, 0, &x1, &y1, &w, &h);
     canvas->setCursor((LCD_WIDTH - w) / 2, 150 - y1);
     canvas->setTextColor(C_CYAN);
@@ -1072,10 +1500,10 @@ void initDisplay()
     canvas->setTextColor(C_WHITE);
     canvas->println(status);
     
-    canvas->setFont(&FreeSans9pt7b);
+    canvas->setFont(&FreeSans18pt7b);
     const char *copyr1 = "by Max Patissier";
     canvas->getTextBounds(copyr1, 0, 0, &x1, &y1, &w, &h);
-    canvas->setCursor((LCD_WIDTH - w) / 2, 250 - y1);
+    canvas->setCursor((LCD_WIDTH - w) / 2, 300 - y1);
     canvas->setTextColor(C_RED);
     canvas->println(copyr1);
     
@@ -1266,6 +1694,27 @@ void loop()
                     needsWheelRedraw = true;
                 }
             }
+            else if (s_serial_buffer.startsWith("EN2,"))
+            {
+                String rest    = s_serial_buffer.substring(4);
+                s_env2_attack  = parseLongField(rest, "EA=");
+                s_env2_decay   = parseLongField(rest, "ED=");
+                s_env2_sustain = parseLongField(rest, "ES=");
+                s_env2_release = parseLongField(rest, "ER=");
+                bool env2Changed = s_env2_attack != s_env2_attack_drawn
+                                || s_env2_decay  != s_env2_decay_drawn
+                                || s_env2_sustain != s_env2_sustain_drawn
+                                || s_env2_release != s_env2_release_drawn;
+                bool currentIsEnv2 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kEnv2Submenu);
+                if (currentIsEnv2 && env2Changed && !s_editing && !s_poly_active)
+                {
+                    s_env2_attack_drawn  = s_env2_attack;
+                    s_env2_decay_drawn   = s_env2_decay;
+                    s_env2_sustain_drawn = s_env2_sustain;
+                    s_env2_release_drawn = s_env2_release;
+                    needsWheelRedraw = true;
+                }
+            }
             else if (s_serial_buffer.startsWith("VCF,"))
             {
                 String rest     = s_serial_buffer.substring(4);
@@ -1284,6 +1733,83 @@ void loop()
                     s_vcf_type_drawn      = s_vcf_type;
                     s_vcf_cutoff_drawn    = s_vcf_cutoff;
                     s_vcf_resonance_drawn = s_vcf_resonance;
+                    needsWheelRedraw = true;
+                }
+            }
+            else if (s_serial_buffer.startsWith("LFO,"))
+            {
+                String rest   = s_serial_buffer.substring(4);
+                s_lfo1_shape  = parseLongField(rest, "LS=");
+                s_lfo1_rate   = parseLongField(rest, "LR=");
+                s_lfo1_sync   = parseLongField(rest, "LSY=");
+                s_lfo1_amp    = parseLongField(rest, "LA=");
+                s_lfo1_phase  = parseLongField(rest, "LP=");
+                bool lfoHubChanged = s_lfo1_shape != s_lfo1_shape_drawn
+                                   || s_lfo1_rate  != s_lfo1_rate_drawn
+                                   || s_lfo1_sync  != s_lfo1_sync_drawn
+                                   || s_lfo1_amp   != s_lfo1_amp_drawn
+                                   || s_lfo1_phase != s_lfo1_phase_drawn;
+                bool currentIsLfo1 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
+                                       && s_menu_selected[s_menu_depth] >= 0 && s_menu_selected[s_menu_depth] < 5);
+                if (currentIsLfo1 && lfoHubChanged && !s_editing && !s_poly_active)
+                {
+                    s_lfo1_shape_drawn = s_lfo1_shape;
+                    s_lfo1_rate_drawn  = s_lfo1_rate;
+                    s_lfo1_sync_drawn  = s_lfo1_sync;
+                    s_lfo1_amp_drawn   = s_lfo1_amp;
+                    s_lfo1_phase_drawn = s_lfo1_phase;
+                    needsWheelRedraw = true;
+                }
+            }
+            else if (s_serial_buffer.startsWith("LF2,"))
+            {
+                String rest   = s_serial_buffer.substring(4);
+                s_lfo2_shape  = parseLongField(rest, "LS=");
+                s_lfo2_rate   = parseLongField(rest, "LR=");
+                s_lfo2_sync   = parseLongField(rest, "LSY=");
+                s_lfo2_amp    = parseLongField(rest, "LA=");
+                s_lfo2_phase  = parseLongField(rest, "LP=");
+                bool lfo2HubChanged = s_lfo2_shape != s_lfo2_shape_drawn
+                                    || s_lfo2_rate  != s_lfo2_rate_drawn
+                                    || s_lfo2_sync  != s_lfo2_sync_drawn
+                                    || s_lfo2_amp   != s_lfo2_amp_drawn
+                                    || s_lfo2_phase != s_lfo2_phase_drawn;
+                bool currentIsLfo2 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
+                                       && s_menu_selected[s_menu_depth] >= 5 && s_menu_selected[s_menu_depth] < 10);
+                if (currentIsLfo2 && lfo2HubChanged && !s_editing && !s_poly_active)
+                {
+                    s_lfo2_shape_drawn = s_lfo2_shape;
+                    s_lfo2_rate_drawn  = s_lfo2_rate;
+                    s_lfo2_sync_drawn  = s_lfo2_sync;
+                    s_lfo2_amp_drawn   = s_lfo2_amp;
+                    s_lfo2_phase_drawn = s_lfo2_phase;
+                    needsWheelRedraw = true;
+                }
+            }
+            else if (s_serial_buffer.startsWith("MAT,"))
+            {
+                String rest = s_serial_buffer.substring(4);
+                s_mat1_src = parseLongField(rest, "S1=");
+                s_mat1_dst = parseLongField(rest, "D1=");
+                s_mat1_amt = parseLongField(rest, "A1=");
+                s_mat2_src = parseLongField(rest, "S2=");
+                s_mat2_dst = parseLongField(rest, "D2=");
+                s_mat2_amt = parseLongField(rest, "A2=");
+                bool matrixHubChanged = s_mat1_src != s_mat1_src_drawn
+                                     || s_mat1_dst != s_mat1_dst_drawn
+                                     || s_mat1_amt != s_mat1_amt_drawn
+                                     || s_mat2_src != s_mat2_src_drawn
+                                     || s_mat2_dst != s_mat2_dst_drawn
+                                     || s_mat2_amt != s_mat2_amt_drawn;
+                bool currentIsMatrix = (s_menu_depth >= 1 && s_menu_stack[1]->children == kMatrixSubmenu);
+                if (currentIsMatrix && matrixHubChanged && !s_editing && !s_poly_active)
+                {
+                    s_mat1_src_drawn = s_mat1_src;
+                    s_mat1_dst_drawn = s_mat1_dst;
+                    s_mat1_amt_drawn = s_mat1_amt;
+                    s_mat2_src_drawn = s_mat2_src;
+                    s_mat2_dst_drawn = s_mat2_dst;
+                    s_mat2_amt_drawn = s_mat2_amt;
                     needsWheelRedraw = true;
                 }
             }
@@ -1355,6 +1881,27 @@ void loop()
                 if (!s_editing && !s_poly_active && s_menu_stack[s_menu_depth] == &kRootNode)
                     needsWheelRedraw = true;
             }
+            else if (s_serial_buffer.startsWith("MACT,"))
+            {
+                // MIDI activity pulse from the host bridge:
+                // "MACT,IN=1" or "MACT,OUT=1" (both may appear in one frame).
+                String rest = s_serial_buffer.substring(5);
+                bool gotIn  = (rest.indexOf("IN=1") >= 0);
+                bool gotOut = (rest.indexOf("OUT=1") >= 0);
+                Serial.printf("[MACT] received IN=%d OUT=%d\n", gotIn ? 1 : 0, gotOut ? 1 : 0);
+                if (gotIn)
+                {
+                    s_midi_in_active = true;
+                    s_midi_in_decay_ms = millis();
+                }
+                if (gotOut)
+                {
+                    s_midi_out_active = true;
+                    s_midi_out_decay_ms = millis();
+                }
+                if (!s_editing && !s_poly_active && s_menu_stack[s_menu_depth] == &kRootNode)
+                    needsWheelRedraw = true;
+            }
 
             s_serial_buffer = "";
         }
@@ -1364,6 +1911,18 @@ void loop()
         }
     }
 
+    // Keep the MIDI activity icons refreshed while their decay timers are
+    // still active, so the arrows fade off smoothly after the last pulse.
+    static uint32_t s_last_midi_activity_draw_ms = 0;
+    uint32_t now = millis();
+    if ((s_midi_in_active || s_midi_out_active)
+        && (now - s_last_midi_activity_draw_ms >= 40)
+        && !s_editing && !s_poly_active && s_menu_stack[s_menu_depth] == &kRootNode)
+    {
+        s_last_midi_activity_draw_ms = now;
+        needsWheelRedraw = true;
+    }
+
     // Render once with the final resolved state, regardless of how many
     // frames were drained above (see comment at the top of loop()).
     if (needsPolyRedraw)
@@ -1371,8 +1930,11 @@ void loop()
     else if (needsEditRedraw)
     {
         bool editing_env1 = (s_menu_depth >= 1 && s_menu_stack[s_menu_depth]->children == kEnv1Submenu);
+        bool editing_env2 = (s_menu_depth >= 1 && s_menu_stack[s_menu_depth]->children == kEnv2Submenu);
         if (editing_env1)
             drawEnvelopeEditScreen(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, s_edit_unit.c_str());
+        else if (editing_env2)
+            drawEnvelope2EditScreen(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, s_edit_unit.c_str());
         else
             drawParamEditRing(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, s_edit_unit.c_str());
     }

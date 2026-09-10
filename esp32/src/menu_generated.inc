@@ -86,9 +86,27 @@ static const MenuNode kOSC_osc_waveOptions[] = {
     { "Pulse", 0, nullptr, 0 },
     { "Tri", 0, nullptr, 0 },
     { "Sin", 0, nullptr, 0 },
-    { "Wave", 0, nullptr, 0 },
+    { "FM", 0, nullptr, 0 },
 };
 static const int kOSC_osc_waveOptionCount = sizeof(kOSC_osc_waveOptions) / sizeof(kOSC_osc_waveOptions[0]);
+
+
+static const MenuNode kOSC_osc_fm_modwaveOptions[] = {
+    { "Sin", 0, nullptr, 0 },
+    { "Tri", 0, nullptr, 0 },
+    { "Saw", 0, nullptr, 0 },
+    { "Square", 0, nullptr, 0 },
+};
+static const int kOSC_osc_fm_modwaveOptionCount = sizeof(kOSC_osc_fm_modwaveOptions) / sizeof(kOSC_osc_fm_modwaveOptions[0]);
+
+
+static const MenuNode kOscFmSubmenu[] = {
+    { "Amount", 0, nullptr, 0 },
+    { "Ratio", 0, nullptr, 0 },
+    { "Ratio Fine", 0, nullptr, 0 },
+    { "Mod Wave", 0, kOSC_osc_fm_modwaveOptions, kOSC_osc_fm_modwaveOptionCount },
+};
+static const int kOscFmSubmenuCount = sizeof(kOscFmSubmenu) / sizeof(kOscFmSubmenu[0]);
 
 
 static const MenuNode kOscSubmenu[] = {
@@ -98,6 +116,7 @@ static const MenuNode kOscSubmenu[] = {
     { "Pulse", 0, nullptr, 0 },
     { "Sub-Osc", 0, nullptr, 0 },
     { "Hard", 0, nullptr, 0 },
+    { "FM", 0, kOscFmSubmenu, kOscFmSubmenuCount },
 };
 static const int kOscSubmenuCount = sizeof(kOscSubmenu) / sizeof(kOscSubmenu[0]);
 

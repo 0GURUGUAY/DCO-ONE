@@ -14,12 +14,36 @@ The target (ESP32) will later be replaced by a direct UART link between the
 Daisy and the ESP32.
 """
 
+import re
 import sys
 import time
 import serial
 import serial.tools.list_ports
 
 BAUDRATE = 115200
+
+MIDI_RE = re.compile(r"^MIDI,([0-9A-Fa-f]{2})(?:,([0-9A-Fa-f]{2}))?(?:,([0-9A-Fa-f]{2}))?$")
+
+# Throttling for MIDI activity pulses forwarded to the ESP32 display.
+# MIDI Clock (0xF8) and Active Sensing (0xFE) are ignored as activity.
+_MIDI_ACTIVITY_INTERVAL = 0.03  # 30 ms
+_midi_activity_last_out = 0.0
+
+
+def send_midi_activity(esp, out_active=False):
+    """Send a short MACT,OUT=1 pulse to the ESP32 so it flashes the green arrow."""
+    global _midi_activity_last_out
+    if out_active:
+        now = time.time()
+        if now - _midi_activity_last_out < _MIDI_ACTIVITY_INTERVAL:
+            return
+        _midi_activity_last_out = now
+    frame = f"MACT,IN=0,OUT={1 if out_active else 0}\n"
+    try:
+        if hasattr(esp, "is_open") and esp.is_open:
+            esp.write(frame.encode("ascii"))
+    except (serial.SerialException, AttributeError, OSError):
+        pass
 
 
 def list_ports():
@@ -97,10 +121,19 @@ def main():
                     raw_line = line + b"\n"
                     text = raw_line.decode("utf-8", errors="replace").strip()
                     # Relay ALL control messages to ESP32
+                    m = MIDI_RE.match(text)
+                    if m:
+                        status = int(m.group(1), 16)
+                        if status not in (0xF8, 0xFE):
+                            send_midi_activity(esp, out_active=True)
+                        print(f"[DAISY LOG] {text}")
+                        continue
+
                     is_control_msg = (
                         text.startswith("DCO1,") or text.startswith("NAV,")
                         or text.startswith("EDIT,") or text.startswith("STAT,")
-                        or text.startswith("VCF,")
+                        or text.startswith("EN2,") or text.startswith("VCF,")
+                        or text.startswith("LFO,") or text.startswith("LF2,")
                         or text.startswith("WAVE,") or text.startswith("POLY,")
                     )
                     if is_control_msg:

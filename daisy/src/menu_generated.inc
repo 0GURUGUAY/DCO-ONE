@@ -90,9 +90,30 @@ static MenuNode kOSC_osc_waveOptions[] = {
     { "Pulse", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "Tri", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "Sin", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
-    { "Wave", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "FM", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
 static constexpr uint8_t kOSC_osc_waveOptionCount = sizeof(kOSC_osc_waveOptions) / sizeof(kOSC_osc_waveOptions[0]);
+
+
+static MenuNode kOSC_osc_fm_modwaveOptions[] = {
+    { "Sin", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Tri", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Saw", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Square", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+};
+static constexpr uint8_t kOSC_osc_fm_modwaveOptionCount = sizeof(kOSC_osc_fm_modwaveOptions) / sizeof(kOSC_osc_fm_modwaveOptions[0]);
+
+static NumericParam kOscFmAmtParam = { 0, 100, 1, 0, "%" };
+static NumericParam kOscFmRatioParam = { 1, 32, 1, 2, "x" };
+static NumericParam kOscFmRatioFineParam = { -50, 50, 1, 0, "%" };
+
+static MenuNode kOscFmSubmenu[] = {
+    { "Amount", COLOR_DEFAULT, nullptr, 0, ApplyOscFmAmt, 0, &kOscFmAmtParam },
+    { "Ratio", COLOR_DEFAULT, nullptr, 0, ApplyOscFmRatio, 0, &kOscFmRatioParam },
+    { "Ratio Fine", COLOR_DEFAULT, nullptr, 0, ApplyOscFmRatioFine, 0, &kOscFmRatioFineParam },
+    { "Mod Wave", COLOR_DEFAULT, kOSC_osc_fm_modwaveOptions, kOSC_osc_fm_modwaveOptionCount, ApplyOscFmModWave, 0, nullptr },
+};
+static constexpr uint8_t kOscFmSubmenuCount = sizeof(kOscFmSubmenu) / sizeof(kOscFmSubmenu[0]);
 
 static NumericParam kOscCoarseParam = { -24, 24, 1, 0, "st" };
 static NumericParam kOscFineParam = { -100, 100, 1, 0, "cents" };
@@ -107,6 +128,7 @@ static MenuNode kOscSubmenu[] = {
     { "Pulse", COLOR_DEFAULT, nullptr, 0, ApplyOscPulse, 0, &kOscPulseParam },
     { "Sub-Osc", COLOR_DEFAULT, nullptr, 0, ApplyOscSub, 0, &kOscSubParam },
     { "Hard", COLOR_DEFAULT, nullptr, 0, ApplyOscHard, 0, &kOscHardParam },
+    { "FM", COLOR_DEFAULT, kOscFmSubmenu, kOscFmSubmenuCount, nullptr, 0, nullptr },
 };
 static constexpr uint8_t kOscSubmenuCount = sizeof(kOscSubmenu) / sizeof(kOscSubmenu[0]);
 
@@ -125,7 +147,7 @@ static constexpr uint8_t kVCF_vcf_typeOptionCount = sizeof(kVCF_vcf_typeOptions)
 static NumericParam kVcfCutoffParam = { 20, 20000, 50, 5000, "Hz" };
 static NumericParam kVcfResonanceParam = { 0, 100, 1, 30, "%" };
 static NumericParam kVcfKeyParam = { 0, 100, 1, 50, "%" };
-static NumericParam kVcfDriveParam = { 0, 100, 5, 0, "%" };
+static NumericParam kVcfDriveParam = { 0, 100, 5, 100, "%" };
 static NumericParam kVcfEnvParam = { -100, 100, 5, 0, "%" };
 
 static MenuNode kVcfSubmenu[] = {
@@ -235,14 +257,14 @@ static NumericParam kLfo2AmpParam = { 0, 100, 1, 40, "%" };
 static NumericParam kLfo2PhaseParam = { 0, 360, 5, 180, "°" };
 
 static MenuNode kLfoSubmenu[] = {
-    { "1 Shape", COLOR_DEFAULT, kLFO_lfo1_shapeOptions, kLFO_lfo1_shapeOptionCount, nullptr, 0, nullptr },
+    { "1 Shape", COLOR_DEFAULT, kLFO_lfo1_shapeOptions, kLFO_lfo1_shapeOptionCount, ApplyLfo1Shape, 0, nullptr },
     { "1 Rate", COLOR_DEFAULT, nullptr, 0, ApplyLfo1Rate, 0, &kLfo1RateParam },
-    { "1 Sync", COLOR_DEFAULT, kLFO_lfo1_syncOptions, kLFO_lfo1_syncOptionCount, nullptr, 0, nullptr },
+    { "1 Sync", COLOR_DEFAULT, kLFO_lfo1_syncOptions, kLFO_lfo1_syncOptionCount, ApplyLfo1Sync, 0, nullptr },
     { "1 Amp", COLOR_DEFAULT, nullptr, 0, ApplyLfo1Amp, 0, &kLfo1AmpParam },
     { "1 Phase", COLOR_DEFAULT, nullptr, 0, ApplyLfo1Phase, 0, &kLfo1PhaseParam },
-    { "2 Shape", COLOR_DEFAULT, kLFO_lfo2_shapeOptions, kLFO_lfo2_shapeOptionCount, nullptr, 0, nullptr },
+    { "2 Shape", COLOR_DEFAULT, kLFO_lfo2_shapeOptions, kLFO_lfo2_shapeOptionCount, ApplyLfo2Shape, 0, nullptr },
     { "2 Rate", COLOR_DEFAULT, nullptr, 0, ApplyLfo2Rate, 0, &kLfo2RateParam },
-    { "2 Sync", COLOR_DEFAULT, kLFO_lfo2_syncOptions, kLFO_lfo2_syncOptionCount, nullptr, 0, nullptr },
+    { "2 Sync", COLOR_DEFAULT, kLFO_lfo2_syncOptions, kLFO_lfo2_syncOptionCount, ApplyLfo2Sync, 0, nullptr },
     { "2 Amp", COLOR_DEFAULT, nullptr, 0, ApplyLfo2Amp, 0, &kLfo2AmpParam },
     { "2 Phase", COLOR_DEFAULT, nullptr, 0, ApplyLfo2Phase, 0, &kLfo2PhaseParam },
 };
