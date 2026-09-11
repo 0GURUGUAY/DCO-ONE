@@ -6,6 +6,7 @@
 #include "fm.h"
 #include "input_manager.h"
 #include "midi.h"
+#include "patch_storage.h"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -409,6 +410,7 @@ struct MenuNode {
     MenuApplyFn   onSelect;      // live-apply callback while this node's children are browsed
     int32_t       selectedIndex; // persists across visits
     NumericParam* numeric;       // non-null => leaf is an editable numeric value (e.g. BPM)
+    MenuApplyFn   onConfirm;     // optional action executed when a numeric edit is confirmed
 };
 
 // Forward declarations for apply callbacks referenced by the generated menu.
@@ -456,6 +458,9 @@ static void ApplyMidiBend(int32_t index);
 static void ApplySysLuminosite(int32_t index);
 static void ApplySysVolume(int32_t index);
 static void ApplySys440Hz(int32_t index);
+static void ApplyPatchLoad(int32_t index);
+static void ApplyPatchSave(int32_t index);
+static void ApplyInitPatch(int32_t index);
 
 static void ApplyWaveform(int32_t index);
 
@@ -745,6 +750,7 @@ struct SynthSettings
 };
 
 static PersistentStorage<SynthSettings> settings_storage(hw.qspi);
+static SynthSettings s_factory_settings;    // compiled-in defaults, captured at boot
 static bool     s_settings_dirty          = false;
 static uint32_t s_last_settings_change_ms = 0;
 
@@ -806,14 +812,13 @@ static void SyncPolyStepsState(SettingsWalkMode mode, SynthSettings& s)
         // Sanitize: flash data saved by an older firmware layout (before
         // these fields existed) can leave garbage bytes here, which must
         // never be interpreted as a valid state/degree/transpose (see
-        // TriggerPolyStep). Legacy state '2' (old CHORD) is migrated to the
-        // new CHORD value.
+        // TriggerPolyStep). kSettingsMagic already rejects truly legacy
+        // layouts, so any state reaching here uses the current 5-state
+        // encoding (OFF/NOTE/ARP/CHORD/FIXED) and must be left untouched.
         for (int i = 0; i < kMaxPolySteps && i < s.numPolySteps; ++i)
         {
             PolyStep loaded = s.polySteps[i];
-            if (loaded.state == 2)
-                loaded.state = POLY_CHORD;
-            else if (loaded.state > POLY_FIXED)
+            if (loaded.state > POLY_FIXED)
                 loaded.state = POLY_OFF;
             if (loaded.degree < -14 || loaded.degree > 14)
                 loaded.degree = 0;
@@ -1530,6 +1535,151 @@ static void SendPolyState()
                  static_cast<int>(s_poly_steps[s_poly_cursor].degree), s_poly_play_step, note);
 }
 
+// -----------------------------------------------------------------------------
+// Patch preset storage (JSON in QSPI flash)
+// -----------------------------------------------------------------------------
+
+// Re-apply every audio engine block after a patch load or factory reset.
+// WalkMenuTree only fires onSelect callbacks for list nodes; numeric leaves
+// (cutoff, envelope times, etc.) must be pushed explicitly.
+static void ApplyAllEngineSettings()
+{
+    s_env1_adsr.Init(hw.AudioSampleRate());
+    ApplyEnv1Attack(kEnv1AttackParam.value);
+    ApplyEnv1Decay(kEnv1DecayParam.value);
+    ApplyEnv1Sustain(kEnv1SustainParam.value);
+    ApplyEnv1Release(kEnv1ReleaseParam.value);
+
+    s_vcf_filter.Init(hw.AudioSampleRate());
+    ApplyVcfType(kVcfSubmenu[0].selectedIndex);
+    ApplyVcfCutoff(kVcfCutoffParam.value);
+    ApplyVcfResonance(kVcfResonanceParam.value);
+    ApplyVcfKey(kVcfKeyParam.value);
+    ApplyVcfDrive(kVcfDriveParam.value);
+    ApplyVcfEnv(kVcfEnvParam.value);
+
+    s_lfo1.Init(hw.AudioSampleRate());
+    ApplyLfo1Shape(kLfoSubmenu[0].selectedIndex);
+    ApplyLfo1Rate(kLfo1RateParam.value);
+    ApplyLfo1Sync(kLfoSubmenu[2].selectedIndex);
+    ApplyLfo1Amp(kLfo1AmpParam.value);
+    ApplyLfo1Phase(kLfo1PhaseParam.value);
+
+    ApplySysVolume(kSysVolumeParam.value);
+
+    ApplyOscFmModWave(kOscFmSubmenu[3].selectedIndex);
+    ApplyOscFmRatio(kOscFmRatioParam.value);
+    ApplyOscFmRatioFine(kOscFmRatioFineParam.value);
+    ApplyOscFmAmt(kOscFmAmtParam.value);
+
+    ApplyMidiChannel(kMidiChannelParam.value);
+}
+
+static void CopySettingsToPatchData(dco::PatchData& patch)
+{
+    SynthSettings tmp;
+    uint32_t vi = 0, si = 0;
+    WalkMenuTree(&kRootNode, SettingsWalkMode::kCollect, tmp, vi, si);
+    SyncPolyStepsState(SettingsWalkMode::kCollect, tmp);
+
+    patch.numValues     = vi;
+    patch.numSelections = si;
+    patch.numPolySteps  = kMaxPolySteps;
+    memcpy(patch.values, tmp.values, sizeof(patch.values));
+    memcpy(patch.selections, tmp.selections, sizeof(tmp.selections));
+    memcpy(patch.polySteps, tmp.polySteps, sizeof(patch.polySteps));
+}
+
+static void ApplyPatchData(const dco::PatchData& patch)
+{
+    SynthSettings tmp;
+    tmp.numValues     = patch.numValues;
+    tmp.numSelections = patch.numSelections;
+    tmp.numPolySteps  = patch.numPolySteps;
+    memcpy(tmp.values, patch.values, sizeof(tmp.values));
+    memcpy(tmp.selections, patch.selections, sizeof(tmp.selections));
+    memcpy(tmp.polySteps, patch.polySteps, sizeof(tmp.polySteps));
+
+    uint32_t vi = 0, si = 0;
+    WalkMenuTree(&kRootNode, SettingsWalkMode::kApply, tmp, vi, si);
+    SyncPolyStepsState(SettingsWalkMode::kApply, tmp);
+}
+
+static void ApplyPatchSave(int32_t slot)
+{
+    if (slot < 1 || slot > dco::kPatchSlotCount)
+        return;
+    dco::PatchData patch;
+    CopySettingsToPatchData(patch);
+    dco::PatchStorageSave(slot, patch);
+    SendMenuPath();
+}
+
+static void ApplyPatchLoad(int32_t slot)
+{
+    if (slot < 1 || slot > dco::kPatchSlotCount)
+        return;
+
+    if (s_playing)
+    {
+        s_playing = false;
+        s_midi_clock_running = false;
+        s_midi_out.SendStop();
+    }
+    PanicSilence();
+    s_440hz_test_active = false;
+    s_poly_wheel_active = false;
+    s_poly_cursor       = 0;
+    s_poly_play_step    = -1;
+
+    dco::PatchData patch;
+    if (!dco::PatchStorageLoad(slot, patch))
+    {
+        SendMenuPath();
+        return;
+    }
+
+    ApplyPatchData(patch);
+    s_prog_transpose_degrees  = 0;
+    s_auto_steps_until_change = kPlayAutoParam.value;
+
+    ApplyAllEngineSettings();
+
+    MarkSettingsDirty(System::GetNow());
+    SendPlayStatus();
+    SendPolyState();
+    SendMenuPath();
+}
+
+static void ApplyInitPatch(int32_t index)
+{
+    (void)index;
+    if (s_playing)
+    {
+        s_playing = false;
+        s_midi_clock_running = false;
+        s_midi_out.SendStop();
+    }
+    PanicSilence();
+    s_440hz_test_active = false;
+    s_poly_wheel_active = false;
+    s_poly_cursor       = 0;
+    s_poly_play_step    = -1;
+    s_prog_transpose_degrees  = 0;
+    s_auto_steps_until_change = 0;
+
+    uint32_t vi = 0, si = 0;
+    WalkMenuTree(&kRootNode, SettingsWalkMode::kApply, s_factory_settings, vi, si);
+    SyncPolyStepsState(SettingsWalkMode::kApply, s_factory_settings);
+
+    ApplyAllEngineSettings();
+
+    MarkSettingsDirty(System::GetNow());
+    SendPlayStatus();
+    SendPolyState();
+    SendMenuPath();
+}
+
 // Sends recent audio samples for waveform display on the ESP32.
 // Format: "WAVE,S=<s0>,<s1>,...,<sN>" where each sample is scaled to -127..127.
 static void SendAudioSamples()
@@ -1555,6 +1705,9 @@ int main(void)
 {
     // Initialize hardware
     hw.Init();
+
+    // Initialize patch storage (QSPI flash region for user presets).
+    dco::PatchStorageInit(hw.qspi);
     
     // Initialize the chord voice pool (all voices share the same waveform,
     // kept quiet enough per-voice that a full chord doesn't clip)
@@ -1583,6 +1736,7 @@ int main(void)
         SyncPolyStepsState(SettingsWalkMode::kCollect, defaults);  // Collect default poly state
         defaults.numValues     = vi;
         defaults.numSelections = si;
+        s_factory_settings     = defaults;  // keep factory defaults for CMD_INIT_PATCH
         settings_storage.Init(defaults);
 
         SynthSettings& loaded = settings_storage.GetSettings();
@@ -2165,6 +2319,8 @@ int main(void)
             if (s_editing_numeric)
             {
                 // Confirm the edited value and return to the submenu wheel
+                if (s_editing_node != nullptr && s_editing_node->onConfirm != nullptr)
+                    s_editing_node->onConfirm(s_editing_node->numeric->value);
                 s_editing_numeric = false;
                 s_editing_node = nullptr;
                 SendMenuPath();

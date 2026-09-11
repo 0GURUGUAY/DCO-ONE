@@ -136,6 +136,8 @@ def param_name(item_id: str) -> str:
         "pitch_bend": "kMidiBendParam",
         "sys_bright": "kSysLuminositeParam",
         "sys_volume": "kSysVolumeParam",
+        "patch_load": "kPatchLoadParam",
+        "patch_save": "kPatchSaveParam",
     }
     return mapping.get(item_id)
 
@@ -188,6 +190,16 @@ def apply_callback_name(item_id: str) -> str:
         "sys_bright": "ApplySysLuminosite",
         "sys_volume": "ApplySysVolume",
         "sys_440hz": "ApplySys440Hz",
+        "patch_init": "ApplyInitPatch",
+    }
+    return mapping.get(item_id)
+
+
+def confirm_callback_name(item_id: str) -> str:
+    """Return the callback executed when a numeric parameter edit is confirmed."""
+    mapping = {
+        "patch_save": "ApplyPatchSave",
+        "patch_load": "ApplyPatchLoad",
     }
     return mapping.get(item_id)
 
@@ -222,7 +234,7 @@ def generate_daisy(data: dict) -> str:
     def emit_item_array(array_name: str, cat_key: str, items: list[dict]) -> tuple[str, str]:
         """Recursively emit a MenuNode array for `items` (supports nested
         "SUBMENU" items, e.g. OSC > FM). Returns (array_name, count_name)."""
-        children_refs: list[tuple[str, str, str, str, str]] = []  # label, arr, cnt, on_select, param_ptr
+        children_refs: list[tuple[str, str, str, str, str, int, str]] = []  # label, arr, cnt, on_select, param_ptr, default_sel, on_confirm
         local_numeric_params: list[tuple[str, dict]] = []
 
         for item in items:
@@ -230,16 +242,18 @@ def generate_daisy(data: dict) -> str:
             label = item.get("label", "")
             itype = item.get("type", "")
             sanitized = to_c_name(f"{cat_key}_{item_id}")
+            confirm = confirm_callback_name(item_id) or "nullptr"
 
             if itype == "SUBMENU":
                 nested_name = nested_array_name(array_name, label)
                 nested_arr, nested_cnt = emit_item_array(nested_name, cat_key, item["submenus"])
                 on_select = apply_callback_name(item_id) or "nullptr"
-                children_refs.append((label, nested_arr, nested_cnt, on_select, "nullptr"))
+                children_refs.append((label, nested_arr, nested_cnt, on_select, "nullptr", 0, "nullptr"))
             elif itype == "ENUM":
                 arr, cnt = emit_options(sanitized, item["options"])
                 on_select = apply_callback_name(item_id) or "nullptr"
-                children_refs.append((label, arr, cnt, on_select, "nullptr"))
+                default_sel = int(item.get("default", 0))
+                children_refs.append((label, arr, cnt, on_select, "nullptr", default_sel, "nullptr"))
             elif itype in ("INT", "FLOAT", "TOGGLE"):
                 varname = param_name(item_id)
                 if varname:
@@ -247,11 +261,15 @@ def generate_daisy(data: dict) -> str:
                     param_ptr = f"&{varname}"
                 else:
                     param_ptr = "nullptr"
-                on_select = apply_callback_name(item_id) or "nullptr"
-                children_refs.append((label, "nullptr", "0", on_select, param_ptr))
+                # Preset actions run only on confirmation, not while turning the encoder.
+                if confirm != "nullptr":
+                    on_select = "nullptr"
+                else:
+                    on_select = apply_callback_name(item_id) or "nullptr"
+                children_refs.append((label, "nullptr", "0", on_select, param_ptr, 0, confirm))
             else:  # ACTION / unimplemented
                 on_select = apply_callback_name(item_id) or "nullptr"
-                children_refs.append((label, "nullptr", "0", on_select, "nullptr"))
+                children_refs.append((label, "nullptr", "0", on_select, "nullptr", 0, "nullptr"))
 
         # Numeric params belonging to this level, declared before the array
         # below so it can take their address.
@@ -271,12 +289,9 @@ def generate_daisy(data: dict) -> str:
 
         count_name = f"{array_name}Count"
         lines.append(f"\nstatic MenuNode {array_name}[] = {{")
-        for label, arr, cnt, on_select, param_ptr in children_refs:
-            # NOTE: always 0 regardless of item type, matching this generator's
-            # long-standing behavior (an ENUM's JSON "default" is not read here).
-            init_sel = 0
+        for label, arr, cnt, on_select, param_ptr, default_sel, on_confirm in children_refs:
             lines.append(
-                f'    {{ "{escape_c_str(label)}", COLOR_DEFAULT, {arr}, {cnt}, {on_select}, {init_sel}, {param_ptr} }},'
+                f'    {{ "{escape_c_str(label)}", COLOR_DEFAULT, {arr}, {cnt}, {on_select}, {default_sel}, {param_ptr}, {on_confirm} }},'
             )
         lines.append("};")
         lines.append(f"static constexpr uint8_t {count_name} = sizeof({array_name}) / sizeof({array_name}[0]);\n")
@@ -333,11 +348,11 @@ def generate_daisy(data: dict) -> str:
         }
         sub_name = name_fixes.get(cat_key, sub_name)
         lines.append(
-            f'    {{ "{cat_key}", {COLOR_ENUM[cat_key]}, {sub_name}, {sub_name}Count, nullptr, 0 }},'
+            f'    {{ "{cat_key}", {COLOR_ENUM[cat_key]}, {sub_name}, {sub_name}Count, nullptr, 0, nullptr, nullptr }},'
         )
     lines.append("};")
     lines.append("static constexpr uint8_t kRootMenuCount = sizeof(kRootMenu) / sizeof(kRootMenu[0]);\n")
-    lines.append("static MenuNode kRootNode = { \"MENU\", COLOR_DEFAULT, kRootMenu, kRootMenuCount, nullptr, 0 };\n")
+    lines.append("static MenuNode kRootNode = { \"MENU\", COLOR_DEFAULT, kRootMenu, kRootMenuCount, nullptr, 0, nullptr, nullptr };\n")
 
     return "\n".join(lines)
 

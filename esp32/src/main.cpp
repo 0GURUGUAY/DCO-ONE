@@ -1430,8 +1430,8 @@ static void drawPolyWheel()
         char state = (i < kMaxPolySteps) ? s_poly_states[i] : '0';
         uint16_t color = C_DKGRAY;
         if (state == '1') color = C_YELLOW;
-        else if (state == '2') color = C_GREEN;
-        else if (state == '3') color = C_BLUE;
+        else if (state == '2') color = C_CYAN;
+        else if (state == '3') color = C_GREEN;
         else if (state == '4') color = C_PINK;
 
         bool isCursor   = (i == s_poly_cursor);

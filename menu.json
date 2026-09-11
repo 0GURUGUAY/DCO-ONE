@@ -256,7 +256,6 @@
       "submenus": [
         { "id": "patch_load", "label": "Load Patch", "type": "INT", "min": 1, "max": 128, "step": 1, "default": 1, "unit": "" },
         { "id": "patch_save", "label": "Save Patch", "type": "INT", "min": 1, "max": 128, "step": 1, "default": 1, "unit": "" },
-        { "id": "patch_bank", "label": "Bank Select", "type": "ENUM", "options": ["BANK A", "BANK B", "BANK C", "USER"], "default": 0 },
         { "id": "patch_init", "label": "Init Sound", "type": "ACTION", "action_id": "CMD_INIT_PATCH" }
       ]
     },

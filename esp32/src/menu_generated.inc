@@ -321,19 +321,9 @@ static const int kFxSubmenuCount = sizeof(kFxSubmenu) / sizeof(kFxSubmenu[0]);
 
 // ---- PRESETS: Patches ----
 
-static const MenuNode kPRESETS_patch_bankOptions[] = {
-    { "BANK A", 0, nullptr, 0 },
-    { "BANK B", 0, nullptr, 0 },
-    { "BANK C", 0, nullptr, 0 },
-    { "USER", 0, nullptr, 0 },
-};
-static const int kPRESETS_patch_bankOptionCount = sizeof(kPRESETS_patch_bankOptions) / sizeof(kPRESETS_patch_bankOptions[0]);
-
-
 static const MenuNode kPresetsSubmenu[] = {
     { "Load Patch", 0, nullptr, 0 },
     { "Save Patch", 0, nullptr, 0 },
-    { "Bank Select", 0, kPRESETS_patch_bankOptions, kPRESETS_patch_bankOptionCount },
     { "Init Sound", 0, nullptr, 0 },
 };
 static const int kPresetsSubmenuCount = sizeof(kPresetsSubmenu) / sizeof(kPresetsSubmenu[0]);

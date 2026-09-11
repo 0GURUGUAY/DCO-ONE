@@ -55,6 +55,7 @@ set(SOURCES
     src/fm.cpp
     src/input_manager.cpp
     src/midi.cpp
+    src/patch_storage.cpp
 )
 
 # Create executable
