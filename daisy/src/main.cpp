@@ -4,12 +4,22 @@
 #include "filter.h"
 #include "lfo.h"
 #include "fm.h"
+#include "fx_chain.h"
 #include "input_manager.h"
 #include "midi.h"
 #include "patch_storage.h"
+#include "../../shared/pattern_transfer.h"
+#include "util/scopedirqblocker.h"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <cstdarg>
+#include <cstdio>
+#include "per/uart.h"
+#include "usbd/usbd_desc.h"
+#include "usbd_ctlreq.h"
+
+#define DEBUG_LOG(...) ((void)0)
 
 using namespace daisy;
 using namespace daisysp;
@@ -18,10 +28,7 @@ using namespace dco;
 // -----------------------------------------------------------------------------
 // Phase 1 configuration
 // -----------------------------------------------------------------------------
-// NOTE: libDaisy's hw.PrintLine() uses a fixed 128-byte internal buffer
-// (LOGGER_BUFFER in logger.h) and silently truncates longer lines (marking
-// the cut with "$$", never emitting the trailing \r\n). Keep the frame
-// ("DCO1,F=###.##,S=" + N * "#.###," ) well under that limit.
+// Native USB MIDI and UART display frames use separate transports.
 static constexpr size_t  kUsbSampleCount        = 12;   // samples per USB frame
 static constexpr uint32_t kFreqChangeIntervalMs = 2000; // new random freq every 2s
 static constexpr uint32_t kUsbSendIntervalMs    = 100;  // send frame every 100ms
@@ -29,7 +36,7 @@ static constexpr float   kFreqMin               = 220.0f;
 static constexpr float   kFreqMax               = 880.0f;
 
 // Main menu wheel shown on the ESP32 AMOLED, driven by the MENU encoder
-// (D17/D18). Navigation state is streamed to the ESP32 over the USB bridge
+// (D17/D18). Navigation state is streamed to the ESP32 over USART1
 // as "NAV,P=<path>", where <path> is a dot-separated list of child indices
 // from the root (e.g. "0" = OSC highlighted at root, "0.0" = ONDE highlighted
 // inside the OSC submenu, "0.0.1" = SQUARE highlighted inside ONDE's
@@ -56,6 +63,80 @@ enum WaveformType {
 
 // Hardware instance
 DaisySeed hw;
+
+static UartHandler s_display_uart;
+static bool s_display_uart_ready = false;
+
+static void InitDisplayUart()
+{
+    UartHandler::Config config;
+    config.periph = UartHandler::Config::Peripheral::USART_1;
+    config.mode = UartHandler::Config::Mode::TX_RX;
+    config.pin_config.tx = seed::D13;
+    config.pin_config.rx = seed::D14;
+    config.baudrate = 921600;
+    s_display_uart_ready = s_display_uart.Init(config) == UartHandler::Result::OK;
+}
+
+// Main-loop only: at 921600 baud a full frame takes less than 3 ms.
+static void DisplayPrintLine(const char* format, ...)
+{
+    if (!s_display_uart_ready)
+        return;
+    char frame[256];
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(frame, sizeof(frame) - 1, format, args);
+    va_end(args);
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(frame) - 1)
+        return;
+    frame[length++] = '\n';
+    s_display_uart.BlockingTransmit(reinterpret_cast<uint8_t*>(frame), length, 5);
+}
+
+static dco::PatternClient s_sd_client;
+static uint8_t DMA_BUFFER_MEM_SECTION s_sd_dma_buffer[256];
+static volatile uint8_t s_sd_rx_ring[1024];
+static volatile size_t s_sd_rx_write = 0;
+static volatile size_t s_sd_rx_read = 0;
+static volatile bool s_sd_rx_fault = false;
+
+static void PatternUartRx(uint8_t* data, size_t size, void*, UartHandler::Result result)
+{
+    if (result != UartHandler::Result::OK)
+    {
+        s_sd_rx_fault = true;
+        return;
+    }
+    for (size_t index = 0; index < size; ++index)
+    {
+        size_t next = (s_sd_rx_write + 1) % sizeof(s_sd_rx_ring);
+        if (next == s_sd_rx_read)
+        {
+            s_sd_rx_fault = true;
+            return;
+        }
+        s_sd_rx_ring[s_sd_rx_write] = data[index];
+        s_sd_rx_write = next;
+    }
+}
+
+static bool SendPatternCommand(const char* line, void*)
+{
+    if (!s_display_uart_ready) return false;
+    char frame[200];
+    int length = snprintf(frame, sizeof(frame), "%s\n", line);
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(frame)) return false;
+    return s_display_uart.BlockingTransmit(reinterpret_cast<uint8_t*>(frame), length, 5)
+        == UartHandler::Result::OK;
+}
+
+static void InitPatternUart()
+{
+    s_sd_client.Init(SendPatternCommand, nullptr);
+    if (s_display_uart_ready)
+        s_display_uart.DmaListenStart(s_sd_dma_buffer, sizeof(s_sd_dma_buffer), PatternUartRx, nullptr);
+}
 
 // Small voice pool so polymetric-wheel chord steps can sound more than one
 // note at once (still just DaisySP Oscillators summed together, no filter/
@@ -121,6 +202,17 @@ static float   s_lfo1_free_rate_hz = 10.0f; // mirrors kLfo1RateParam.value, set
 static float   s_lfo1_last_output  = 0.0f;  // last Process() output, -1..1 scaled by Amp
 static float   s_current_bpm_hz    = 120.0f; // mirrors kBpmParam.value, refreshed each main-loop tick
 
+// Two-slot modulation matrix. Sources/destinations are read from the menu's
+// selectedIndex in the audio callback; amounts are copied here by the apply
+// callbacks. Currently only LFO1 -> PITCH is wired, but the struct is ready
+// for additional sources/destinations.
+struct MatrixSlot {
+    uint8_t source;      // index into kMATRIX_modX_srcOptions (0 = NONE)
+    uint8_t destination; // index into kMATRIX_modX_dstOptions (0 = NONE)
+    float   amount;      // -1.0 .. 1.0
+};
+static MatrixSlot s_matrix_slots[2] = {};
+
 // Beats-per-cycle for each "lfoX_sync" option after FREE (index 0), same
 // 4-beats-per-whole-note convention as PolyDivisionBeats() above.
 static float LfoSyncDivisionBeats(int32_t syncIndex)
@@ -136,19 +228,22 @@ static float LfoSyncDivisionBeats(int32_t syncIndex)
 // Master output volume (set from SYSTEM > Volume)
 static float s_master_volume = 1.0f;
 
-// -----------------------------------------------------------------------------
-// MIDI IN over USB CDC
-// -----------------------------------------------------------------------------
-// The Daisy only exposes a CDC class on its USB port. The host bridge sends
-// incoming MIDI messages as text frames ("MIDI,90,3C,7F\n"); we receive the
-// raw bytes via UsbHandle::SetReceiveCallback and parse them in the main loop.
-static constexpr size_t kMidiInRingSize = 256;
-static uint8_t          s_midi_in_ring[kMidiInRingSize];
-static volatile size_t  s_midi_in_write_idx = 0;
-static volatile size_t  s_midi_in_read_idx  = 0;
+// Four-slot serial FX chain: FX1 -> FX2 -> FX3 -> FX4.  Each slot can be
+// Off/Reverb/Delay/Chorus/Flanger/Phaser/BitCrusher with its own dry/wet mix.
+static dco::FxChain s_fx_chain;
 
-static char             s_midi_in_line[128];
-static size_t           s_midi_in_line_len  = 0;
+// -----------------------------------------------------------------------------
+// Native USB MIDI IN / OUT
+// -----------------------------------------------------------------------------
+static daisy::MidiUsbHandler s_usb_midi;
+
+static uint8_t* MidiProductDescriptor(USBD_SpeedTypeDef, uint16_t* length)
+{
+    static uint8_t name[] = "DCO-ONE MIDI";
+    alignas(4) static uint8_t descriptor[sizeof(name) * 2];
+    USBD_GetString(name, descriptor, length);
+    return descriptor;
+}
 
 static uint8_t          s_midi_in_channel      = 0;   // zero-based, mirrors MIDI Channel menu
 static uint8_t          s_midi_in_note_count   = 0;   // number of held MIDI notes
@@ -238,6 +333,33 @@ static int32_t RandomInt(int32_t min, int32_t max)
     return min + static_cast<int32_t>(seed % range);
 }
 
+// Menu node type forward-declared here so AudioCallback can read the matrix
+// menu selections (kMatrixSubmenu is defined in menu_generated.inc below).
+using MenuApplyFn = void (*)(int32_t selectedIndex);
+
+struct NumericParam {
+    int32_t     minValue;
+    int32_t     maxValue;
+    int32_t     step;
+    int32_t     value;
+    const char* unit;
+};
+
+struct MenuNode {
+    const char*   label;
+    uint8_t       color;
+    MenuNode*     children;      // nullptr if this node has no submenu yet
+    uint8_t       childCount;
+    MenuApplyFn   onSelect;      // live-apply callback while this node's children are browsed
+    int32_t       selectedIndex; // persists across visits
+    NumericParam* numeric;       // non-null => leaf is an editable numeric value (e.g. BPM)
+    MenuApplyFn   onConfirm;     // optional action executed when a numeric edit is confirmed
+};
+
+// Accessors for matrix menu state (defined after menu_generated.inc).
+uint8_t GetMatrixSource(int slot);
+uint8_t GetMatrixDestination(int slot);
+
 // Audio callback - REAL-TIME SAFE: no allocation, no blocking calls.
 void AudioCallback(AudioHandle::InputBuffer in, 
                    AudioHandle::OutputBuffer out, 
@@ -290,6 +412,16 @@ void AudioCallback(AudioHandle::InputBuffer in,
         s_lfo1.SetRate(effectiveHz);
     }
 
+    // FX slot type changes are requested from the menu thread but must only
+    // ever be (re)constructed here, on the audio thread, before Process()
+    // runs on any sample this block -- see FxChain::ApplyPendingTypeChanges.
+    s_fx_chain.ApplyPendingTypeChanges();
+
+    // DELAY's Time control is tempo-synced (note division, not raw ms), so
+    // its effective ms must track live BPM changes even when the knob isn't
+    // touched -- same per-block push as the VCF/LFO1 blocks above.
+    s_fx_chain.SetTempo(s_current_bpm_hz);
+
     for (size_t i = 0; i < size; i++)
     {
         // TEST MODE (SYSTEM > 440Hz): clean 440Hz sine straight to the DAC,
@@ -322,13 +454,27 @@ void AudioCallback(AudioHandle::InputBuffer in,
         static uint32_t last_retrigger = 0;
         if (retrigger != last_retrigger)
         {
-            gate = false;
+            // Soft retrigger: forces mode back to ATTACK without touching the
+            // envelope's current level. A hard reset (x_ snapped to 0) or a
+            // fake forced-low gate window both create a second, audible
+            // dip/rise in level right on top of the real note -- perceived as
+            // two separate triggers. Because OFF steps now properly close the
+            // gate and let Release run its full course (see TriggerPolyStep),
+            // the level is already near 0 by the time a genuinely new note
+            // follows a gap, so Attack still shows; back-to-back legato notes
+            // (no gap) blend continuously instead of double-triggering, same
+            // as a real analog mono synth.
+            s_env1_adsr.Retrigger(false);
             last_retrigger = retrigger;
         }
         float envOut = s_env1_adsr.Process(gate);
         s_env1_last_output = envOut;
         sample *= envOut;
-        
+
+        // FX chain: FX1 -> FX2 -> FX3 -> FX4 (each slot has its own
+        // type/mix/params, all active simultaneously in series).
+        sample = s_fx_chain.Process(sample);
+
         // Apply master volume and output to both channels
         sample *= s_master_volume;
         out[0][i] = sample;
@@ -338,6 +484,29 @@ void AudioCallback(AudioHandle::InputBuffer in,
         PushSample(sample);
     }
     s_lfo1_last_output = s_lfo1.GetLastOutput();
+
+    // Read matrix source/destination selections (uint8_t, atomic read).
+    s_matrix_slots[0].source = GetMatrixSource(0);
+    s_matrix_slots[0].destination = GetMatrixDestination(0);
+    s_matrix_slots[1].source = GetMatrixSource(1);
+    s_matrix_slots[1].destination = GetMatrixDestination(1);
+
+    // Apply LFO1 -> PITCH modulation (other sources/destinations are stubs).
+    float pitchModSemitones = 0.0f;
+    for (int slot = 0; slot < 2; ++slot)
+    {
+        const MatrixSlot& mat = s_matrix_slots[slot];
+        if (mat.source == 0 || mat.destination == 0)
+            continue;
+        if (mat.source == 1 && mat.destination == 2) // LFO1 -> PITCH
+            pitchModSemitones += s_lfo1_last_output * mat.amount * 12.0f;
+    }
+
+    for (int v = 0; v < kMaxChordVoices; ++v)
+    {
+        s_voices[v].SetPitchModulation(pitchModSemitones);
+        s_fm_voices[v].SetPitchModulation(pitchModSemitones);
+    }
 }
 
 // Map WaveformType enum to DaisySP Oscillator waveform constants
@@ -389,30 +558,6 @@ enum MenuColor : uint8_t {
     COLOR_SYSTEM,
 };
 
-using MenuApplyFn = void (*)(int32_t selectedIndex);
-
-// A leaf editable numeric value (e.g. Tempo/BPM): edited in place with the
-// same encoder_menu/button_menu_sw used for navigation (see the numeric edit
-// mode in the main loop below).
-struct NumericParam {
-    int32_t     minValue;
-    int32_t     maxValue;
-    int32_t     step;
-    int32_t     value;
-    const char* unit;
-};
-
-struct MenuNode {
-    const char*   label;
-    uint8_t       color;
-    MenuNode*     children;      // nullptr if this node has no submenu yet
-    uint8_t       childCount;
-    MenuApplyFn   onSelect;      // live-apply callback while this node's children are browsed
-    int32_t       selectedIndex; // persists across visits
-    NumericParam* numeric;       // non-null => leaf is an editable numeric value (e.g. BPM)
-    MenuApplyFn   onConfirm;     // optional action executed when a numeric edit is confirmed
-};
-
 // Forward declarations for apply callbacks referenced by the generated menu.
 static void ApplyPlayAuto(int32_t index);
 static void ApplyOscCoarse(int32_t index);
@@ -450,11 +595,25 @@ static void ApplyLfo2Amp(int32_t index);
 static void ApplyLfo2Phase(int32_t index);
 static void ApplyMatSlot1Amt(int32_t index);
 static void ApplyMatSlot2Amt(int32_t index);
-static void ApplyFxDryWet(int32_t index);
-static void ApplyFxTime(int32_t index);
-static void ApplyFxFb(int32_t index);
+static void ApplyFx1Type(int32_t index);
+static void ApplyFx1Mix(int32_t index);
+static void ApplyFx1P1(int32_t index);
+static void ApplyFx1P2(int32_t index);
+static void ApplyFx2Type(int32_t index);
+static void ApplyFx2Mix(int32_t index);
+static void ApplyFx2P1(int32_t index);
+static void ApplyFx2P2(int32_t index);
+static void ApplyFx3Type(int32_t index);
+static void ApplyFx3Mix(int32_t index);
+static void ApplyFx3P1(int32_t index);
+static void ApplyFx3P2(int32_t index);
+static void ApplyFx4Type(int32_t index);
+static void ApplyFx4Mix(int32_t index);
+static void ApplyFx4P1(int32_t index);
+static void ApplyFx4P2(int32_t index);
 static void ApplyMidiChannel(int32_t index);
 static void ApplyMidiBend(int32_t index);
+static void ApplyAllFxSettings();
 static void ApplySysLuminosite(int32_t index);
 static void ApplySysVolume(int32_t index);
 static void ApplySys440Hz(int32_t index);
@@ -468,10 +627,23 @@ static void ApplyWaveform(int32_t index);
 static void TriggerMidiNoteOn(uint8_t note, uint8_t velocity);
 static void TriggerMidiNoteOff(uint8_t note);
 static void TriggerMidiAllNotesOff();
-static void ParseMidiInLine(const char* line);
-static void MidiInCdcCallback(uint8_t* buff, uint32_t* len);
+static void ServiceMidiIn();
 
 #include "menu_generated.inc"
+
+uint8_t GetMatrixSource(int slot)
+{
+    if (slot == 0)
+        return static_cast<uint8_t>(kMatrixSubmenu[0].selectedIndex);
+    return static_cast<uint8_t>(kMatrixSubmenu[3].selectedIndex);
+}
+
+uint8_t GetMatrixDestination(int slot)
+{
+    if (slot == 0)
+        return static_cast<uint8_t>(kMatrixSubmenu[1].selectedIndex);
+    return static_cast<uint8_t>(kMatrixSubmenu[4].selectedIndex);
+}
 
 static void ApplyWaveform(int32_t index)
 {
@@ -483,11 +655,52 @@ static void ApplyWaveform(int32_t index)
 
 // Apply callbacks for numeric parameters
 static void ApplyPlayAuto(int32_t index) {}
-static void ApplyOscCoarse(int32_t index) {}
-static void ApplyOscFine(int32_t index) {}
-static void ApplyOscPulse(int32_t index) {}
-static void ApplyOscSub(int32_t index) {}
-static void ApplyOscHard(int32_t index) {}
+
+static void ApplyOscCoarse(int32_t index)
+{
+    (void)index;
+    int32_t semitones = kOscCoarseParam.value;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+    {
+        s_voices[v].SetCoarseTune(semitones);
+        s_fm_voices[v].SetCoarseTune(semitones);
+    }
+}
+
+static void ApplyOscFine(int32_t index)
+{
+    (void)index;
+    int32_t cents = kOscFineParam.value;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+    {
+        s_voices[v].SetFineTune(cents);
+        s_fm_voices[v].SetFineTune(cents);
+    }
+}
+
+static void ApplyOscPulse(int32_t index)
+{
+    (void)index;
+    float duty = static_cast<float>(kOscPulseParam.value) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_voices[v].SetPulseWidth(duty);
+}
+
+static void ApplyOscSub(int32_t index)
+{
+    (void)index;
+    float level = static_cast<float>(kOscSubParam.value) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_voices[v].SetSubAmount(level);
+}
+
+static void ApplyOscHard(int32_t index)
+{
+    (void)index;
+    float hardness = static_cast<float>(kOscHardParam.value) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_voices[v].SetHardness(hardness);
+}
 
 // FM (OSC > FM submenu): DaisySP Synthesis-style 2-op FM (see fm.h/fm.cpp).
 // Ratio is split into a coarse integer part + a fine +/-50% nudge (mirrors
@@ -636,11 +849,98 @@ static void ApplyLfo2Rate(int32_t index) {}
 static void ApplyLfo2Sync(int32_t index) {}
 static void ApplyLfo2Amp(int32_t index) {}
 static void ApplyLfo2Phase(int32_t index) {}
-static void ApplyMatSlot1Amt(int32_t index) {}
-static void ApplyMatSlot2Amt(int32_t index) {}
-static void ApplyFxDryWet(int32_t index) {}
-static void ApplyFxTime(int32_t index) {}
-static void ApplyFxFb(int32_t index) {}
+static void ApplyMatSlot1Amt(int32_t index)
+{
+    s_matrix_slots[0].amount = static_cast<float>(index) * 0.01f;
+}
+
+static void ApplyMatSlot2Amt(int32_t index)
+{
+    s_matrix_slots[1].amount = static_cast<float>(index) * 0.01f;
+}
+
+// FX helpers: map raw menu values to the FX chain.  Param1 is normalised
+// from the 10..1000 ms UI range; Param2 is already 0..100.
+static inline float FxNormMix(int32_t index)  { return static_cast<float>(index) * 0.01f; }
+static inline float FxNormP1(int32_t index)   { return static_cast<float>(index - 10) / 490.0f; }
+static inline float FxNormP2(int32_t index)   { return static_cast<float>(index) * 0.01f; }
+
+// One "Type" node's selectedIndex per FX slot -- lets the exclusivity check
+// below both read and correct another slot's menu display in sync with the
+// engine.
+static int32_t* const kFxTypeSelectedIndex[dco::FxChain::kNumSlots] = {
+    &kFxFx1Submenu[0].selectedIndex, &kFxFx2Submenu[0].selectedIndex,
+    &kFxFx3Submenu[0].selectedIndex, &kFxFx4Submenu[0].selectedIndex,
+};
+
+// Enforces "an effect type can only be active in a single FX slot at a
+// time" (e.g. no 2 Reverb simultaneously). If another slot already has the
+// requested (non-Off) type, that slot is bumped back to Off -- both in the
+// engine and in its own menu selection -- before this slot's request is
+// applied.
+static void ApplyFxSlotType(int slot, int32_t index)
+{
+    dco::FxType type = static_cast<dco::FxType>(index);
+    if (type != dco::FxType::OFF)
+    {
+        for (int other = 0; other < dco::FxChain::kNumSlots; ++other)
+        {
+            if (other != slot && *kFxTypeSelectedIndex[other] == index)
+            {
+                *kFxTypeSelectedIndex[other] = 0;
+                s_fx_chain.SetSlotType(other, dco::FxType::OFF);
+            }
+        }
+    }
+    s_fx_chain.SetSlotType(slot, type);
+}
+
+static void ApplyFx1Type(int32_t index) { ApplyFxSlotType(0, index); }
+static void ApplyFx1Mix (int32_t index) { s_fx_chain.SetSlotMix(0, FxNormMix(index)); }
+static void ApplyFx1P1  (int32_t index) { s_fx_chain.SetSlotParam1(0, FxNormP1(index)); }
+static void ApplyFx1P2  (int32_t index) { s_fx_chain.SetSlotParam2(0, FxNormP2(index)); }
+
+static void ApplyFx2Type(int32_t index) { ApplyFxSlotType(1, index); }
+static void ApplyFx2Mix (int32_t index) { s_fx_chain.SetSlotMix(1, FxNormMix(index)); }
+static void ApplyFx2P1  (int32_t index) { s_fx_chain.SetSlotParam1(1, FxNormP1(index)); }
+static void ApplyFx2P2  (int32_t index) { s_fx_chain.SetSlotParam2(1, FxNormP2(index)); }
+
+static void ApplyFx3Type(int32_t index) { ApplyFxSlotType(2, index); }
+static void ApplyFx3Mix (int32_t index) { s_fx_chain.SetSlotMix(2, FxNormMix(index)); }
+static void ApplyFx3P1  (int32_t index) { s_fx_chain.SetSlotParam1(2, FxNormP1(index)); }
+static void ApplyFx3P2  (int32_t index) { s_fx_chain.SetSlotParam2(2, FxNormP2(index)); }
+
+static void ApplyFx4Type(int32_t index) { ApplyFxSlotType(3, index); }
+static void ApplyFx4Mix (int32_t index) { s_fx_chain.SetSlotMix(3, FxNormMix(index)); }
+static void ApplyFx4P1  (int32_t index) { s_fx_chain.SetSlotParam1(3, FxNormP1(index)); }
+static void ApplyFx4P2  (int32_t index) { s_fx_chain.SetSlotParam2(3, FxNormP2(index)); }
+
+// Push the full FX menu state into the audio engine.  Called once at boot
+// after settings are restored so that numeric leaves (mix/p1/p2) are applied
+// in addition to the type selections already re-fired by WalkMenuTree.
+static void ApplyAllFxSettings()
+{
+    ApplyFx1Type(kFxFx1Submenu[0].selectedIndex);
+    ApplyFx1Mix (kFx1MixParam.value);
+    ApplyFx1P1  (kFx1P1Param.value);
+    ApplyFx1P2  (kFx1P2Param.value);
+
+    ApplyFx2Type(kFxFx2Submenu[0].selectedIndex);
+    ApplyFx2Mix (kFx2MixParam.value);
+    ApplyFx2P1  (kFx2P1Param.value);
+    ApplyFx2P2  (kFx2P2Param.value);
+
+    ApplyFx3Type(kFxFx3Submenu[0].selectedIndex);
+    ApplyFx3Mix (kFx3MixParam.value);
+    ApplyFx3P1  (kFx3P1Param.value);
+    ApplyFx3P2  (kFx3P2Param.value);
+
+    ApplyFx4Type(kFxFx4Submenu[0].selectedIndex);
+    ApplyFx4Mix (kFx4MixParam.value);
+    ApplyFx4P1  (kFx4P1Param.value);
+    ApplyFx4P2  (kFx4P2Param.value);
+}
+
 static void ApplyMidiChannel(int32_t index)
 {
     // kMidiChannelParam is 1..16 in the UI; MIDI channels are zero-based.
@@ -705,6 +1005,11 @@ static bool          s_poly_wheel_active = false; // overlay currently shown on 
 static int           s_poly_cursor    = 0;        // step edited by encoder_main/encoder_submenu
 static int           s_poly_play_step = -1;       // step currently sounding, -1 = stopped
 
+// Direction de lecture du séquenceur, cyclée par button_prog_sw en mode PLAY :
+// 0 = avant, 1 = arrière, 2 = aller-retour (ping-pong)
+static int           s_playback_direction = 0;
+static int32_t       s_pingpong_index = 0;        // position dans le cycle ping-pong 0..2*(N-1)-1
+
 // Arpeggio state for a CHORD step: its notes are played one at a time in
 // sequence (voice 0 reused monophonically) instead of stacked as a chord.
 static bool     s_arp_active           = false;
@@ -714,6 +1019,13 @@ static int      s_arp_note_index       = 0;
 static float    s_arp_root_freq        = 0.0f;
 static uint32_t s_arp_note_duration_ms = 0;
 static uint32_t s_arp_last_note_ms     = 0;
+
+// Gate length for the sequencer's MIDI output: percentage of the step
+// duration during which a Note On stays open before a Note Off is emitted.
+// Edited with encoder_prog while the poly wheel is shown (25/50/75/100).
+static int32_t  s_gate_length_pct      = 100; // 0..100 %, persisted in flash/presets
+static uint8_t  s_gate_notes[kMaxChordVoices] = { 0xFF, 0xFF, 0xFF, 0xFF };
+static uint32_t s_gate_note_off_ms[kMaxChordVoices] = {};
 
 // Performance transposition in scale degrees: encoder_prog adjusts it when
 // AUTO is off; AUTO mode picks a random value every N sequencer steps.
@@ -727,7 +1039,7 @@ static constexpr int32_t kMaxProgTransposeDegrees = 24;
 // named, user-selectable presets (multiple slots) are a future PRESETS-menu
 // feature, not implemented here.
 // -----------------------------------------------------------------------------
-static constexpr uint32_t kSettingsMagic          = 0x44434F32; // "DCO2" (PolyStep layout grew by one byte)
+static constexpr uint32_t kSettingsMagic          = 0x44434F34; // "DCO4" (4-slot FX chain)
 static constexpr uint32_t kSettingsSaveDebounceMs = 1500; // idle time before flushing to flash
 static constexpr int      kMaxPersistedValues     = 48;
 static constexpr int      kMaxPersistedSelections = 48;
@@ -738,6 +1050,7 @@ struct SynthSettings
     uint32_t numValues     = 0;
     uint32_t numSelections = 0;
     uint32_t numPolySteps  = 0;  // Persist polymetric step setup
+    int32_t  gateLengthPct = 100; // Global sequencer MIDI gate length %
     int32_t  values[kMaxPersistedValues]         = {};
     int32_t  selections[kMaxPersistedSelections] = {};
     PolyStep polySteps[kMaxPolySteps]            = {};  // Full polymetric step state
@@ -761,12 +1074,13 @@ static uint32_t s_last_settings_change_ms = 0;
 // the audio engine reflects the restored value immediately).
 enum class SettingsWalkMode { kCollect, kApply };
 
-static void WalkMenuTree(MenuNode* node, SettingsWalkMode mode, SynthSettings& s,
+template <typename Settings>
+static void WalkMenuTree(MenuNode* node, SettingsWalkMode mode, Settings& s,
                          uint32_t& valIdx, uint32_t& selIdx)
 {
     if (node->numeric != nullptr)
     {
-        if (valIdx < kMaxPersistedValues)
+        if (valIdx < sizeof(s.values) / sizeof(s.values[0]))
         {
             if (mode == SettingsWalkMode::kCollect)
                 s.values[valIdx] = node->numeric->value;
@@ -777,7 +1091,7 @@ static void WalkMenuTree(MenuNode* node, SettingsWalkMode mode, SynthSettings& s
     }
     if (node->childCount > 0)
     {
-        if (selIdx < kMaxPersistedSelections)
+        if (selIdx < sizeof(s.selections) / sizeof(s.selections[0]))
         {
             if (mode == SettingsWalkMode::kCollect)
             {
@@ -803,7 +1117,8 @@ static void SyncPolyStepsState(SettingsWalkMode mode, SynthSettings& s)
 {
     if (mode == SettingsWalkMode::kCollect)
     {
-        s.numPolySteps = kMaxPolySteps;
+        s.numPolySteps  = kMaxPolySteps;
+        s.gateLengthPct = s_gate_length_pct;
         for (int i = 0; i < kMaxPolySteps; ++i)
             s.polySteps[i] = s_poly_steps[i];
     }
@@ -815,6 +1130,12 @@ static void SyncPolyStepsState(SettingsWalkMode mode, SynthSettings& s)
         // TriggerPolyStep). kSettingsMagic already rejects truly legacy
         // layouts, so any state reaching here uses the current 5-state
         // encoding (OFF/NOTE/ARP/CHORD/FIXED) and must be left untouched.
+        if (s.gateLengthPct < 0)
+            s.gateLengthPct = 0;
+        else if (s.gateLengthPct > 100)
+            s.gateLengthPct = 100;
+        s_gate_length_pct = s.gateLengthPct;
+
         for (int i = 0; i < kMaxPolySteps && i < s.numPolySteps; ++i)
         {
             PolyStep loaded = s.polySteps[i];
@@ -961,6 +1282,22 @@ static void TriggerEnvelope(bool on)
     }
 }
 
+// Convert a step/note duration into a gate duration using the current GT%.
+// MIDI-only: this shapes the external Note On/Off pair sent to s_midi_out
+// (see the scheduled Note Off loop in the main loop). It has no effect on
+// the internal OSC/ENV1/VCA chain, which is triggered once per step and
+// runs its own ADSR shape regardless of GT% (see TriggerEnvelope).
+// GT=100 leaves the gate open for the full duration; GT=0 is treated as a
+// minimal trigger (1 ms) so an external gear's own envelope still gets a
+// chance to sound.
+static uint32_t GateLengthMs(uint32_t durationMs)
+{
+    if (s_gate_length_pct >= 100)
+        return durationMs;
+    uint32_t gateMs = durationMs * static_cast<uint32_t>(s_gate_length_pct) / 100u;
+    return gateMs < 1 ? 1 : gateMs;
+}
+
 static void SilencePolyVoices()
 {
     for (int v = 0; v < kMaxChordVoices; ++v)
@@ -986,8 +1323,8 @@ static void SilenceSequencerVoices()
 
 // Hard silence + MIDI panic: turns off every voice, sends NoteOff for all
 // sequencer notes we think are active, and emits an All Notes Off controller
-// message. Called on transport stop and on gray (OFF) steps to guarantee no
-// stuck note.
+// message. Called on transport stop and other panic situations to guarantee
+// no stuck note.
 static void PanicSilence()
 {
     TriggerEnvelope(false);
@@ -1001,10 +1338,31 @@ static void PanicSilence()
         s_voice_active[v] = false;
         s_voice_source[v] = VoiceSource::NONE;
         s_midi_notes[v]   = 0xFF;
+        s_gate_notes[v]   = 0xFF;
     }
     s_midi_in_note_count = 0;
     s_midi_gate_wanted   = false;
     s_midi_out.SendAllNotesOff(0);
+}
+
+// Release only the internal envelope when a gray step is entered manually
+// (e.g. editing the current playing step to OFF). MIDI notes are left
+// ringing because the user may want the tie effect. The oscillator itself is
+// NOT cut here: only ENV1's gate closes, so its Release time actually plays
+// out through the VCA instead of being silenced instantly.
+static void ReleaseSequencerVoices()
+{
+    s_arp_active = false;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+    {
+        if (s_voice_source[v] == VoiceSource::SEQUENCER)
+        {
+            s_voice_source[v] = VoiceSource::NONE;
+            s_midi_notes[v]   = 0xFF;
+            s_gate_notes[v]   = 0xFF;
+        }
+    }
+    TriggerEnvelope(false);
 }
 
 static void SendPlayStatus();  // forward declaration for ApplySys440Hz
@@ -1046,36 +1404,78 @@ static uint32_t CurrentStepDurationMs()
     return ms < 1 ? 1 : ms;
 }
 
+static void CycleGateLength(int32_t delta)
+{
+    int32_t newValue = s_gate_length_pct + delta * 5;
+    if (newValue < 0)
+        newValue = 0;
+    else if (newValue > 100)
+        newValue = 100;
+    s_gate_length_pct = newValue;
+}
+
 // Sounds one note of the currently-armed arpeggio (voice 0 reused
 // monophonically), turning off whatever note voice 0 was previously playing.
 static void PlayArpNote(int index)
 {
     if (s_midi_notes[0] != 0xFF)
         s_midi_out.SendNoteOff(s_midi_notes[0], 0, 0);
+    s_gate_notes[0] = 0xFF;
 
     float freq = s_arp_root_freq * powf(2.0f, s_arp_intervals[index] / 12.0f);
-    SetVoicePitchAmp(0, freq, 0.3f / kMaxChordVoices);
-    s_voice_active[0] = true;
-    s_voice_source[0] = VoiceSource::SEQUENCER;
     s_midi_notes[0]   = FrequencyToMidiNote(freq);
+    {
+        ScopedIrqBlocker audioUpdate;
+        SetVoicePitchAmp(0, freq, 0.3f / kMaxChordVoices);
+        s_voice_active[0] = true;
+        s_voice_source[0] = VoiceSource::SEQUENCER;
+        for (int voice = 1; voice < kMaxChordVoices; ++voice)
+        {
+            s_voice_active[voice] = false;
+            s_voice_source[voice] = VoiceSource::NONE;
+            s_midi_notes[voice] = 0xFF;
+        }
+        s_vcf_last_note_freq = freq;
+        TriggerEnvelope(true);
+    }
     s_midi_out.SendNoteOn(s_midi_notes[0], 100, 0);
-    s_vcf_last_note_freq = freq; // VCF keytrack reference (see AudioCallback)
+
+    if (s_gate_length_pct < 100)
+    {
+        uint32_t gate_ms = GateLengthMs(s_arp_note_duration_ms);
+        s_gate_notes[0] = s_midi_notes[0];
+        s_gate_note_off_ms[0] = System::GetNow() + gate_ms;
+    }
 }
 
 // Sounds `stepIndex` on the voice pool: a plain NOTE step uses voice 0 only;
 // an ARPEGGIO step cycles the PLAY submenu's currently-selected Chords
 // intervals one note at a time over the step's duration (see the main loop's
 // arpeggio advance); a CHORD step plays all of those intervals simultaneously.
-// An OFF step silences every voice.
+// An OFF step sends no trigger to ENV1/VCA: the oscillator only sounds when a
+// note/arp/chord actually plays. MIDI note tracking (s_midi_notes/tie) is
+// left untouched here so the external MIDI note keeps ringing until the next
+// sounding step turns it off -- this OFF handling only affects the internal
+// OSC/ENV1/VCA chain, never the MIDI output.
 static void TriggerPolyStep(int stepIndex)
 {
     if (stepIndex < 0 || stepIndex >= kMaxPolySteps)
         return;
     const PolyStep& step = s_poly_steps[stepIndex];
 
-    // Snapshot currently-sounding notes and mark the internal state as "none
-    // active" before sending NoteOffs. This guarantees a NoteOff is emitted
-    // for every note that was previously triggered, even if this step is OFF.
+    // Gray / inactive step: no note is played, so no trigger is sent. Close
+    // ENV1's gate so the oscillator fades out via its own Release time
+    // instead of continuing to sound (MIDI note tracking is untouched: the
+    // next sounding step still sends its proper Note Off, same tie as before).
+    if (step.state == POLY_OFF)
+    {
+        s_arp_active = false;
+        TriggerEnvelope(false);
+        return;
+    }
+
+    // Sounding step: first cut any previous sequencer notes (and cancel their
+    // scheduled gate Note Offs), then start the new notes.
     uint8_t prev_notes[kMaxChordVoices];
     for (int v = 0; v < kMaxChordVoices; ++v)
     {
@@ -1086,64 +1486,65 @@ static void TriggerPolyStep(int stepIndex)
     {
         if (prev_notes[v] != 0xFF)
             s_midi_out.SendNoteOff(prev_notes[v], 0, 0);
+        s_gate_notes[v] = 0xFF;
     }
 
     s_arp_active = false;
-
-    if (step.state == POLY_OFF)
-    {
-        // Explicit MIDI panic for gray/inactive steps: some hosts need the
-        // All Notes Off controller to fully clear a hanging note.
-        s_midi_out.SendAllNotesOff(0);
-        SilenceSequencerVoices();
-        TriggerEnvelope(false);
-        return;
-    }
 
     // FIXED steps carry their own encoder_prog transpose and ignore AUTO.
     int32_t stepTranspose = (step.state == POLY_FIXED)
                             ? step.fixedTranspose
                             : GetPerformanceTransposeDegrees();
     float rootFreq = DegreeToFrequencyHz(step.degree, stepTranspose);
-    s_vcf_last_note_freq = rootFreq; // VCF keytrack reference (see AudioCallback)
     if (step.state == POLY_CHORD)
     {
         int32_t chordIdx = kPlaySubmenu[3].selectedIndex;
         const ChordDef& chord = kChordDefs[((chordIdx % kChordDefCount) + kChordDefCount) % kChordDefCount];
         int noteCount = chord.count < kMaxChordVoices ? chord.count : kMaxChordVoices;
 
-        for (int v = 0; v < kMaxChordVoices; ++v)
+        uint32_t chord_step_ms = CurrentStepDurationMs();
+        uint32_t chord_gate_ms = GateLengthMs(chord_step_ms);
+
+        float frequencies[kMaxChordVoices];
+        for (int voice = 0; voice < noteCount; ++voice)
         {
-            if (v < noteCount)
+            frequencies[voice] = rootFreq * powf(2.0f, chord.intervals[voice] / 12.0f);
+            s_midi_notes[voice] = FrequencyToMidiNote(frequencies[voice]);
+        }
+        {
+            ScopedIrqBlocker audioUpdate;
+            for (int voice = 0; voice < kMaxChordVoices; ++voice)
             {
-                float freq = rootFreq * powf(2.0f, chord.intervals[v] / 12.0f);
-                SetVoicePitchAmp(v, freq, 0.3f / kMaxChordVoices);
-                s_voice_active[v] = true;
-                s_voice_source[v] = VoiceSource::SEQUENCER;
-                s_midi_notes[v]   = FrequencyToMidiNote(freq);
-                s_midi_out.SendNoteOn(s_midi_notes[v], 100, 0);
+                if (voice < noteCount)
+                {
+                    SetVoicePitchAmp(voice, frequencies[voice], 0.3f / kMaxChordVoices);
+                    s_voice_active[voice] = true;
+                    s_voice_source[voice] = VoiceSource::SEQUENCER;
+                }
+                else
+                {
+                    s_voice_active[voice] = false;
+                    s_voice_source[voice] = VoiceSource::NONE;
+                }
             }
-            else
+            s_vcf_last_note_freq = rootFreq;
+            TriggerEnvelope(true);
+        }
+        for (int voice = 0; voice < noteCount; ++voice)
+        {
+            s_midi_out.SendNoteOn(s_midi_notes[voice], 100, 0);
+            if (s_gate_length_pct < 100)
             {
-                s_voice_active[v] = false;
-                s_voice_source[v] = VoiceSource::NONE;
-                s_midi_notes[v]   = 0xFF;
+                s_gate_notes[voice] = s_midi_notes[voice];
+                s_gate_note_off_ms[voice] = System::GetNow() + chord_gate_ms;
             }
         }
-        TriggerEnvelope(true);
     }
     else if (step.state == POLY_ARP)
     {
         int32_t chordIdx = kPlaySubmenu[3].selectedIndex;
         const ChordDef& chord = kChordDefs[((chordIdx % kChordDefCount) + kChordDefCount) % kChordDefCount];
         int noteCount = chord.count < kMaxChordVoices ? chord.count : kMaxChordVoices;
-
-        for (int v = 1; v < kMaxChordVoices; ++v)
-        {
-            s_voice_active[v] = false;
-            s_voice_source[v] = VoiceSource::NONE;
-            s_midi_notes[v]   = 0xFF;
-        }
 
         s_arp_root_freq  = rootFreq;
         s_arp_note_count = noteCount;
@@ -1157,22 +1558,34 @@ static void TriggerPolyStep(int stepIndex)
         s_arp_active       = noteCount > 1; // a 1-note arpeggio just plays like a NOTE step
 
         PlayArpNote(0);
-        TriggerEnvelope(true);
     }
     else if (step.state == POLY_NOTE || step.state == POLY_FIXED)
     {
-        SetVoicePitchAmp(0, rootFreq, 0.3f / kMaxChordVoices);
-        s_voice_active[0] = true;
-        s_voice_source[0] = VoiceSource::SEQUENCER;
+        uint32_t note_step_ms = CurrentStepDurationMs();
+        uint32_t note_gate_ms = GateLengthMs(note_step_ms);
+
         s_midi_notes[0]   = FrequencyToMidiNote(rootFreq);
-        s_midi_out.SendNoteOn(s_midi_notes[0], 100, 0);
-        for (int v = 1; v < kMaxChordVoices; ++v)
         {
-            s_voice_active[v] = false;
-            s_voice_source[v] = VoiceSource::NONE;
-            s_midi_notes[v]   = 0xFF;
+            ScopedIrqBlocker audioUpdate;
+            SetVoicePitchAmp(0, rootFreq, 0.3f / kMaxChordVoices);
+            s_voice_active[0] = true;
+            s_voice_source[0] = VoiceSource::SEQUENCER;
+            for (int voice = 1; voice < kMaxChordVoices; ++voice)
+            {
+                s_voice_active[voice] = false;
+                s_voice_source[voice] = VoiceSource::NONE;
+                s_midi_notes[voice] = 0xFF;
+            }
+            s_vcf_last_note_freq = rootFreq;
+            TriggerEnvelope(true);
         }
-        TriggerEnvelope(true);
+        s_midi_out.SendNoteOn(s_midi_notes[0], 100, 0);
+
+        if (s_gate_length_pct < 100)
+        {
+            s_gate_notes[0] = s_midi_notes[0];
+            s_gate_note_off_ms[0] = System::GetNow() + note_gate_ms;
+        }
     }
     else
     {
@@ -1209,9 +1622,12 @@ static int FindMidiVoiceForNote(uint8_t note)
 
 static int AllocateMidiVoice()
 {
+    // Checks ownership (source), not voice_active: a sequencer voice that was
+    // just released (see ReleaseSequencerVoices) stays voice_active=true
+    // while ENV1 tails off, but is unowned (source==NONE) and safe to steal.
     for (int v = 0; v < kMaxChordVoices; ++v)
     {
-        if (!s_voice_active[v])
+        if (s_voice_source[v] == VoiceSource::NONE)
             return v;
     }
     return 0;
@@ -1304,55 +1720,21 @@ static void ProcessMidiInMessage(uint8_t status, uint8_t data0, uint8_t data1)
     }
 }
 
-static void ParseMidiInLine(const char* line)
+static void ServiceMidiIn()
 {
-    // Expected format (same as the bridge emits): MIDI,SS[,DD[,DD]]
-    if (strncmp(line, "MIDI,", 5) != 0)
-        return;
-
-    const char* p = line + 5;
-    char* end = nullptr;
-    unsigned long status = strtoul(p, &end, 16);
-    if (end == p)
-        return;
-    p = end;
-    if (*p != ',')
-        return;
-    ++p;
-
-    unsigned long data0 = strtoul(p, &end, 16);
-    if (end == p)
-        return;
-    p = end;
-
-    unsigned long data1 = 0;
-    if (*p == ',')
+    s_usb_midi.Listen();
+    while (s_usb_midi.HasEvents())
     {
-        ++p;
-        data1 = strtoul(p, &end, 16);
-    }
-
-    ProcessMidiInMessage(static_cast<uint8_t>(status),
-                         static_cast<uint8_t>(data0),
-                         static_cast<uint8_t>(data1));
-}
-
-// CDC receive callback (runs in USB interrupt context).
-// Copies incoming bytes into a lock-free ring buffer for the main loop.
-static void MidiInCdcCallback(uint8_t* buff, uint32_t* len)
-{
-    if (buff == nullptr || len == nullptr)
-        return;
-
-    const uint32_t n = *len;
-    for (uint32_t i = 0; i < n; ++i)
-    {
-        size_t w    = s_midi_in_write_idx;
-        size_t next = (w + 1) % kMidiInRingSize;
-        if (next == s_midi_in_read_idx)
-            return; // ring full: drop the rest
-        s_midi_in_ring[w] = buff[i];
-        s_midi_in_write_idx = next;
+        const auto event = s_usb_midi.PopEvent();
+        uint8_t status;
+        switch (event.type)
+        {
+            case daisy::NoteOn: status = 0x90; break;
+            case daisy::NoteOff: status = 0x80; break;
+            case daisy::ControlChange: status = 0xB0; break;
+            default: continue;
+        }
+        ProcessMidiInMessage(status | event.channel, event.data[0], event.data[1]);
     }
 }
 
@@ -1398,11 +1780,12 @@ static void SendNextStatusFrame()
     switch (s_status_frame_index)
     {
         case 0:
-            hw.PrintLine("STAT,BPM=%ld,ROOT=%ld,SCALE=%ld,PLAY=%d,TRNS=%ld,AUTO=%ld,NOTE=%d,T440=%d,EA=%ld,ED=%ld,ES=%ld,ER=%ld",
+            DisplayPrintLine("STAT,BPM=%ld,ROOT=%ld,SCALE=%ld,PLAY=%d,DIR=%d,TRNS=%ld,AUTO=%ld,NOTE=%d,T440=%d,EA=%ld,ED=%ld,ES=%ld,ER=%ld",
                          static_cast<long>(kBpmParam.value),
                          static_cast<long>(kPlaySubmenu[1].selectedIndex),
                          static_cast<long>(kPlaySubmenu[2].selectedIndex),
                          s_playing ? 1 : 0,
+                         static_cast<int>(s_playback_direction),
                          static_cast<long>(s_prog_transpose_degrees),
                          static_cast<long>(kPlayAutoParam.value),
                          note,
@@ -1413,7 +1796,7 @@ static void SendNextStatusFrame()
                          static_cast<long>(kEnv1ReleaseParam.value));
             break;
         case 1:
-            hw.PrintLine("VCF,VFT=%ld,VC=%ld,VR=%ld,VK=%ld,VD=%ld,VE=%ld",
+            DisplayPrintLine("VCF,VFT=%ld,VC=%ld,VR=%ld,VK=%ld,VD=%ld,VE=%ld",
                          static_cast<long>(kVcfSubmenu[0].selectedIndex),
                          static_cast<long>(kVcfCutoffParam.value),
                          static_cast<long>(kVcfResonanceParam.value),
@@ -1422,7 +1805,7 @@ static void SendNextStatusFrame()
                          static_cast<long>(kVcfEnvParam.value));
             break;
         case 2:
-            hw.PrintLine("LFO,LS=%ld,LR=%ld,LSY=%ld,LA=%ld,LP=%ld",
+            DisplayPrintLine("LFO,LS=%ld,LR=%ld,LSY=%ld,LA=%ld,LP=%ld",
                          static_cast<long>(kLfoSubmenu[0].selectedIndex),
                          static_cast<long>(kLfo1RateParam.value),
                          static_cast<long>(kLfoSubmenu[2].selectedIndex),
@@ -1430,7 +1813,7 @@ static void SendNextStatusFrame()
                          static_cast<long>(kLfo1PhaseParam.value));
             break;
         case 3:
-            hw.PrintLine("MAT,S1=%ld,D1=%ld,A1=%ld,S2=%ld,D2=%ld,A2=%ld",
+            DisplayPrintLine("MAT,S1=%ld,D1=%ld,A1=%ld,S2=%ld,D2=%ld,A2=%ld",
                          static_cast<long>(kMatrixSubmenu[0].selectedIndex),
                          static_cast<long>(kMatrixSubmenu[1].selectedIndex),
                          static_cast<long>(kMatSlot1AmtParam.value),
@@ -1439,28 +1822,50 @@ static void SendNextStatusFrame()
                          static_cast<long>(kMatSlot2AmtParam.value));
             break;
         case 4:
-            hw.PrintLine("EN2,EA=%ld,ED=%ld,ES=%ld,ER=%ld",
+            DisplayPrintLine("EN2,EA=%ld,ED=%ld,ES=%ld,ER=%ld",
                          static_cast<long>(kEnv2AttackParam.value),
                          static_cast<long>(kEnv2DecayParam.value),
                          static_cast<long>(kEnv2SustainParam.value),
                          static_cast<long>(kEnv2ReleaseParam.value));
             break;
         case 5:
-            hw.PrintLine("LF2,LS=%ld,LR=%ld,LSY=%ld,LA=%ld,LP=%ld",
+            DisplayPrintLine("LF2,LS=%ld,LR=%ld,LSY=%ld,LA=%ld,LP=%ld",
                          static_cast<long>(kLfoSubmenu[5].selectedIndex),
                          static_cast<long>(kLfo2RateParam.value),
                          static_cast<long>(kLfoSubmenu[7].selectedIndex),
                          static_cast<long>(kLfo2AmpParam.value),
                          static_cast<long>(kLfo2PhaseParam.value));
             break;
+                case 6:
+                    DisplayPrintLine("OSC,W=%ld,A=%ld,R=%ld,F=%ld,M=%ld,C=%ld,I=%ld,P=%ld,S=%ld,H=%ld",
+                         static_cast<long>(kOscSubmenu[0].selectedIndex),
+                         static_cast<long>(kOscFmAmtParam.value),
+                         static_cast<long>(kOscFmRatioParam.value),
+                         static_cast<long>(kOscFmRatioFineParam.value),
+                         static_cast<long>(kOscFmSubmenu[3].selectedIndex),
+                         static_cast<long>(kOscCoarseParam.value),
+                         static_cast<long>(kOscFineParam.value),
+                         static_cast<long>(kOscPulseParam.value),
+                         static_cast<long>(kOscSubParam.value),
+                         static_cast<long>(kOscHardParam.value));
+                    break;
+                case 7:
+                    DisplayPrintLine("FXS,T1=%ld,T2=%ld,T3=%ld,T4=%ld",
+                         static_cast<long>(kFxFx1Submenu[0].selectedIndex),
+                         static_cast<long>(kFxFx2Submenu[0].selectedIndex),
+                         static_cast<long>(kFxFx3Submenu[0].selectedIndex),
+                         static_cast<long>(kFxFx4Submenu[0].selectedIndex));
+                    break;
     }
-    s_status_frame_index = (s_status_frame_index + 1) % 6;
+                s_status_frame_index = (s_status_frame_index + 1) % 8;
 }
 
 static void SendPlayStatus()
 {
+    const uint8_t next_frame = s_status_frame_index;
     s_status_frame_index = 0;
     SendNextStatusFrame();
+    s_status_frame_index = next_frame;
 }
 
 // Sends the full navigation path as "NAV,P=<idx0>.<idx1>...[,V=<n>]": one
@@ -1469,6 +1874,54 @@ static void SendPlayStatus()
 // current value (e.g. ONDE's waveform) when it is itself a live-value list
 // -- lets the ESP32 show that value in its center hub without requiring the
 // user to drill into it first.
+static bool s_patch_used[dco::kPatchSlotCount] = {};
+static int32_t s_current_patch = 0;
+static bool s_patch_error = false;
+
+static int32_t NextUsedPatchSlot(int32_t slot, int32_t direction)
+{
+    int32_t slots[dco::kPatchSlotCount];
+    int32_t count = 0;
+    int32_t position = 0;
+    for (int32_t candidate = 1; candidate <= dco::kPatchSlotCount; ++candidate)
+    {
+        if (!s_patch_used[candidate - 1])
+            continue;
+        if (candidate == slot)
+            position = count;
+        slots[count++] = candidate;
+    }
+    if (count == 0)
+        return 0;
+    position += direction;
+    position = position < 0 ? 0 : (position >= count ? count - 1 : position);
+    return slots[position];
+}
+
+static void SendPresetState(int mode, int32_t slot)
+{
+    char used[dco::kPatchSlotCount / 4 + 1];
+    for (int group = 0; group < dco::kPatchSlotCount / 4; ++group)
+    {
+        int bits = 0;
+        for (int bit = 0; bit < 4; ++bit)
+            if (s_patch_used[group * 4 + bit])
+                bits |= 1 << bit;
+        used[group] = "0123456789ABCDEF"[bits];
+    }
+    used[sizeof(used) - 1] = '\0';
+    DisplayPrintLine("PRST,C=%ld,M=%d,S=%ld,U=%s,W=%ld,B=%ld,R=%ld,G=%ld,F=%ld,H=%ld,N=%d,E=%d,SD=%d,IO=%d",
+                 static_cast<long>(s_current_patch), mode, static_cast<long>(slot), used,
+                 static_cast<long>(kOscSubmenu[0].selectedIndex),
+                 static_cast<long>(kBpmParam.value),
+                 static_cast<long>(kPlaySubmenu[1].selectedIndex),
+                 static_cast<long>(kPlaySubmenu[2].selectedIndex),
+                 static_cast<long>(kVcfSubmenu[0].selectedIndex),
+                 static_cast<long>(kVcfCutoffParam.value), ClampedPolyStepCount(),
+                 s_patch_error ? 1 : 0, s_sd_client.available ? 1 : 0,
+                 s_sd_client.Busy() ? 1 : 0);
+}
+
 static void SendMenuPath()
 {
     char path[64];
@@ -1492,7 +1945,9 @@ static void SendMenuPath()
         }
     }
 
-    hw.PrintLine("NAV,P=%s", path);
+    if (cur->children == kPresetsSubmenu)
+        SendPresetState(0, 0);
+    DisplayPrintLine("NAV,P=%s", path);
 }
 
 // Streams the numeric value currently being edited (e.g. BPM) so the ESP32
@@ -1503,7 +1958,12 @@ static void SendEditState()
     if (s_editing_node == nullptr || s_editing_node->numeric == nullptr)
         return;
     const NumericParam* p = s_editing_node->numeric;
-    hw.PrintLine("EDIT,V=%ld,MIN=%ld,MAX=%ld,U=%s",
+    if (p == &kPatchLoadParam || p == &kPatchSaveParam)
+    {
+        SendPresetState(p == &kPatchLoadParam ? 1 : 2, p->value);
+        return;
+    }
+    DisplayPrintLine("EDIT,V=%ld,MIN=%ld,MAX=%ld,U=%s",
                  static_cast<long>(p->value), static_cast<long>(p->minValue),
                  static_cast<long>(p->maxValue), p->unit ? p->unit : "");
 }
@@ -1511,10 +1971,10 @@ static void SendEditState()
 // Streams the polymetric step wheel overlay: step count, edit cursor, one
 // state digit per step ('0'=off,'1'=note,'2'=arpeggio,'3'=chord,'4'=fixed), the cursor step's
 // degree (for the ESP32 to show while encoder_submenu adjusts it), the
-// currently-sounding playhead step (-1 while stopped) and the MIDI note
-// number currently being played (255 = none). Sent on entry, on every
-// cursor/state/degree change, on every playhead advance, and on the
-// periodic heartbeat while the wheel is shown.
+// currently-sounding playhead step (-1 while stopped), the MIDI note
+// number currently being played (255 = none) and the global gate length %.
+// Sent on entry, on every cursor/state/degree change, on every playhead
+// advance, and on the periodic heartbeat while the wheel is shown.
 static void SendPolyState()
 {
     int stepCount = ClampedPolyStepCount();
@@ -1530,13 +1990,14 @@ static void SendPolyState()
 
     int note = (s_midi_notes[0] != 0xFF) ? static_cast<int>(s_midi_notes[0]) : 255;
 
-    hw.PrintLine("POLY,N=%d,C=%d,ST=%s,DEG=%d,PLAY=%d,NOTE=%d",
+    DisplayPrintLine("POLY,N=%d,C=%d,ST=%s,DEG=%d,PLAY=%d,NOTE=%d,GATE=%d",
                  stepCount, s_poly_cursor, states,
-                 static_cast<int>(s_poly_steps[s_poly_cursor].degree), s_poly_play_step, note);
+                 static_cast<int>(s_poly_steps[s_poly_cursor].degree), s_poly_play_step, note,
+                 static_cast<int>(s_gate_length_pct));
 }
 
 // -----------------------------------------------------------------------------
-// Patch preset storage (JSON in QSPI flash)
+// Patch preset storage (SD card on ESP32 via UART)
 // -----------------------------------------------------------------------------
 
 // Re-apply every audio engine block after a patch load or factory reset.
@@ -1572,6 +2033,8 @@ static void ApplyAllEngineSettings()
     ApplyOscFmRatioFine(kOscFmRatioFineParam.value);
     ApplyOscFmAmt(kOscFmAmtParam.value);
 
+    ApplyAllFxSettings();
+
     ApplyMidiChannel(kMidiChannelParam.value);
 }
 
@@ -1579,14 +2042,13 @@ static void CopySettingsToPatchData(dco::PatchData& patch)
 {
     SynthSettings tmp;
     uint32_t vi = 0, si = 0;
-    WalkMenuTree(&kRootNode, SettingsWalkMode::kCollect, tmp, vi, si);
+    WalkMenuTree(&kRootNode, SettingsWalkMode::kCollect, patch, vi, si);
     SyncPolyStepsState(SettingsWalkMode::kCollect, tmp);
 
     patch.numValues     = vi;
     patch.numSelections = si;
     patch.numPolySteps  = kMaxPolySteps;
-    memcpy(patch.values, tmp.values, sizeof(patch.values));
-    memcpy(patch.selections, tmp.selections, sizeof(tmp.selections));
+    patch.gateLengthPct = tmp.gateLengthPct;
     memcpy(patch.polySteps, tmp.polySteps, sizeof(patch.polySteps));
 }
 
@@ -1596,29 +2058,48 @@ static void ApplyPatchData(const dco::PatchData& patch)
     tmp.numValues     = patch.numValues;
     tmp.numSelections = patch.numSelections;
     tmp.numPolySteps  = patch.numPolySteps;
-    memcpy(tmp.values, patch.values, sizeof(tmp.values));
-    memcpy(tmp.selections, patch.selections, sizeof(tmp.selections));
+    tmp.gateLengthPct = patch.gateLengthPct;
     memcpy(tmp.polySteps, patch.polySteps, sizeof(tmp.polySteps));
 
     uint32_t vi = 0, si = 0;
-    WalkMenuTree(&kRootNode, SettingsWalkMode::kApply, tmp, vi, si);
+    dco::PatchData restored = patch;
+    WalkMenuTree(&kRootNode, SettingsWalkMode::kApply, restored, vi, si);
     SyncPolyStepsState(SettingsWalkMode::kApply, tmp);
 }
 
 static void ApplyPatchSave(int32_t slot)
 {
+    DEBUG_LOG("[PATCH] SAVE requested slot %ld", static_cast<long>(slot));
     if (slot < 1 || slot > dco::kPatchSlotCount)
+    {
+        DEBUG_LOG("[PATCH] SAVE invalid slot");
         return;
+    }
     dco::PatchData patch;
     CopySettingsToPatchData(patch);
-    dco::PatchStorageSave(slot, patch);
+    DEBUG_LOG("[PATCH] SAVE copying BPM=%ld", static_cast<long>(kBpmParam.value));
+    s_patch_error = !s_sd_client.Start(dco::PatternClient::Operation::Save, slot,
+                                     System::GetNow(), &patch);
     SendMenuPath();
 }
 
 static void ApplyPatchLoad(int32_t slot)
 {
+    DEBUG_LOG("[PATCH] LOAD requested slot %ld", static_cast<long>(slot));
     if (slot < 1 || slot > dco::kPatchSlotCount)
+    {
+        DEBUG_LOG("[PATCH] LOAD invalid slot");
         return;
+    }
+
+    s_patch_error = !s_sd_client.Start(dco::PatternClient::Operation::Load, slot, System::GetNow());
+    SendMenuPath();
+}
+
+static void CompletePatchLoad(int32_t slot, const dco::PatchData& patch)
+{
+    s_current_patch = slot;
+    DEBUG_LOG("[PATCH] LOAD slot %ld OK", static_cast<long>(slot));
 
     if (s_playing)
     {
@@ -1632,13 +2113,6 @@ static void ApplyPatchLoad(int32_t slot)
     s_poly_cursor       = 0;
     s_poly_play_step    = -1;
 
-    dco::PatchData patch;
-    if (!dco::PatchStorageLoad(slot, patch))
-    {
-        SendMenuPath();
-        return;
-    }
-
     ApplyPatchData(patch);
     s_prog_transpose_degrees  = 0;
     s_auto_steps_until_change = kPlayAutoParam.value;
@@ -1646,14 +2120,104 @@ static void ApplyPatchLoad(int32_t slot)
     ApplyAllEngineSettings();
 
     MarkSettingsDirty(System::GetNow());
+
+    // Start playback immediately after a successful load.
+    s_playing = true;
+    s_poly_play_step = 0;
+    s_auto_steps_until_change = kPlayAutoParam.value;
+    TriggerPolyStep(s_poly_play_step);
+    s_midi_out.SendStart();
+    s_midi_clock_phase = 0.0f;
+    s_midi_clock_running = true;
+
+    s_poly_wheel_active = true;
     SendPlayStatus();
     SendPolyState();
-    SendMenuPath();
+}
+
+static void ServicePatternStorage(uint32_t now)
+{
+    static char line[192];
+    static size_t length = 0;
+    static bool discard = false;
+    static uint32_t lastScan = 0;
+    if (s_sd_rx_fault)
+    {
+        ScopedIrqBlocker blocker;
+        s_sd_rx_read = s_sd_rx_write;
+        s_sd_rx_fault = false;
+        length = 0;
+        discard = true;
+    }
+    while (s_sd_rx_read != s_sd_rx_write)
+    {
+        char value = static_cast<char>(s_sd_rx_ring[s_sd_rx_read]);
+        s_sd_rx_read = (s_sd_rx_read + 1) % sizeof(s_sd_rx_ring);
+        if (value == '\r') continue;
+        if (value == '\n')
+        {
+            line[length] = '\0';
+            if (!discard) s_sd_client.Receive(line, now);
+            length = 0;
+            discard = false;
+        }
+        else if (!discard)
+        {
+            if (length < sizeof(line) - 1) line[length++] = value;
+            else { length = 0; discard = true; }
+        }
+    }
+    s_sd_client.Tick(now);
+    dco::PatternClient::Operation operation;
+    int slot;
+    bool success;
+    if (s_sd_client.TakeResult(operation, slot, success))
+    {
+        if (operation == dco::PatternClient::Operation::List)
+        {
+            for (int index = 0; index < dco::kPatchSlotCount; ++index)
+                s_patch_used[index] = success && (s_sd_client.used[index / 8] & (1U << (index % 8)));
+        }
+        else
+        {
+            if (success && operation == dco::PatternClient::Operation::Load)
+                success = s_sd_client.record.data.numValues == s_factory_settings.numValues
+                    && s_sd_client.record.data.numSelections == s_factory_settings.numSelections;
+            s_patch_error = !success;
+            if (success && operation == dco::PatternClient::Operation::Save)
+            {
+                s_patch_used[slot - 1] = true;
+                s_current_patch = slot;
+            }
+            DEBUG_LOG("[SD] %s slot %d: %s",
+                         operation == dco::PatternClient::Operation::Save ? "SAVE" : "LOAD",
+                         slot, success ? "OK" : "FAILED");
+            if (success && operation == dco::PatternClient::Operation::Load)
+            {
+                CompletePatchLoad(slot, s_sd_client.record.data);
+                return;
+            }
+        }
+        if (s_menu_stack[s_menu_depth]->children == kPresetsSubmenu)
+        {
+            if (s_editing_numeric) SendEditState();
+            else SendMenuPath();
+        }
+    }
+    if (!s_sd_client.Busy() && !s_editing_numeric && now - lastScan >= 5000)
+    {
+        lastScan = now;
+        s_sd_client.Start(dco::PatternClient::Operation::List, 0, now);
+    }
+    if (s_display_uart_ready && !s_display_uart.IsListening())
+        s_display_uart.DmaListenStart(s_sd_dma_buffer, sizeof(s_sd_dma_buffer), PatternUartRx, nullptr);
 }
 
 static void ApplyInitPatch(int32_t index)
 {
     (void)index;
+    s_current_patch = 0;
+    s_patch_error = false;
     if (s_playing)
     {
         s_playing = false;
@@ -1698,7 +2262,7 @@ static void SendAudioSamples()
                           i == 0 ? "%d" : ",%d", sample_int);
     }
     
-    hw.PrintLine("%s", buf);
+    DisplayPrintLine("%s", buf);
 }
 
 int main(void)
@@ -1706,9 +2270,6 @@ int main(void)
     // Initialize hardware
     hw.Init();
 
-    // Initialize patch storage (QSPI flash region for user presets).
-    dco::PatchStorageInit(hw.qspi);
-    
     // Initialize the chord voice pool (all voices share the same waveform,
     // kept quiet enough per-voice that a full chord doesn't clip)
     for (int v = 0; v < kMaxChordVoices; ++v)
@@ -1779,6 +2340,10 @@ int main(void)
     ApplyLfo1Amp(kLfo1AmpParam.value);
     ApplyLfo1Phase(kLfo1PhaseParam.value);
 
+    // Initialize the four-slot FX chain and push the restored/default values.
+    s_fx_chain.Init(hw.AudioSampleRate());
+    ApplyAllFxSettings();
+
     // Master volume also isn't re-applied by WalkMenuTree's restore (it only
     // re-fires onSelect for parent/list nodes, not numeric leaves), so without
     // this it silently stays at its 1.0f default regardless of the persisted
@@ -1794,7 +2359,14 @@ int main(void)
     ApplyOscFmRatio(kOscFmRatioParam.value);
     ApplyOscFmRatioFine(kOscFmRatioFineParam.value);
     ApplyOscFmAmt(kOscFmAmtParam.value);
-    
+
+    // OSC main parameters are also numeric leaves: push restored/default values.
+    ApplyOscCoarse(kOscCoarseParam.value);
+    ApplyOscFine(kOscFineParam.value);
+    ApplyOscPulse(kOscPulseParam.value);
+    ApplyOscSub(kOscSubParam.value);
+    ApplyOscHard(kOscHardParam.value);
+
     // Initialize main encoder rotation only (D21/D22), with inverted direction for sync with menu encoder
     encoder_main.Init(daisy::seed::D21,  // pin A
                       daisy::seed::D22,  // pin B
@@ -1840,33 +2412,33 @@ int main(void)
     // Initialize TRIGGER button (D9)
     button_trigger.Init(daisy::seed::D9);
     
-    // Start USB serial for debugging / display stream
-    hw.StartLog(false);
+    InitDisplayUart();
+    InitPatternUart();
 
-    // Initialize MIDI output on the same CDC link (channel 1 = zero-indexed 0).
-    s_midi_out.Init(hw, 0);
-
-    // Register CDC receive callback so the host bridge can send MIDI IN
-    // messages as text frames on the same USB CDC link.
-    hw.usb_handle.SetReceiveCallback(MidiInCdcCallback, daisy::UsbHandle::FS_INTERNAL);
+    daisy::MidiUsbHandler::Config midi_config;
+    midi_config.transport_config.periph = daisy::MidiUsbTransport::Config::INTERNAL;
+    FS_Desc.GetProductStrDescriptor = MidiProductDescriptor;
+    s_usb_midi.Init(midi_config);
+    s_usb_midi.StartReceive();
+    s_midi_out.Init(s_usb_midi, 0);
 
     // Apply the persisted MIDI channel (kMidiChannelParam is 1..16).
     ApplyMidiChannel(kMidiChannelParam.value);
     
     // Print startup message
-    hw.PrintLine("=== DCO-ONE Phase 1 ===");
-    hw.PrintLine("Daisy Seed 3 Audio Engine");
-    hw.PrintLine("Random-frequency sine wave -> USB CDC");
-    hw.PrintLine("  Sample Rate: 48 kHz");
-    hw.PrintLine("  Amplitude: 30%");
-    hw.PrintLine("Audio output: ACTIVE");
-    hw.PrintLine("=======================");
-    hw.PrintLine("Navigation (Simplified UI):");
-    hw.PrintLine("  Encoder menu (D17/D18): Browse menu & submenu");
-    hw.PrintLine("  Button menu sw (D25): Enter submenu / Exit submenu");
-    hw.PrintLine("  Button home (D12): Go back one menu level");
-    hw.PrintLine("Other encoders reserved for future features.");
-    hw.PrintLine("Monitoring input...");
+    DEBUG_LOG("=== DCO-ONE Phase 1 ===");
+    DEBUG_LOG("Daisy Seed 3 Audio Engine");
+    DEBUG_LOG("Native USB MIDI IN / OUT");
+    DEBUG_LOG("  Sample Rate: 48 kHz");
+    DEBUG_LOG("  Amplitude: 30%%");
+    DEBUG_LOG("Audio output: ACTIVE");
+    DEBUG_LOG("=======================");
+    DEBUG_LOG("Navigation (Simplified UI):");
+    DEBUG_LOG("  Encoder menu (D17/D18): Browse menu & submenu");
+    DEBUG_LOG("  Button menu sw (D25): Enter submenu / Exit submenu");
+    DEBUG_LOG("  Button home (D12): Go back one menu level");
+    DEBUG_LOG("Other encoders reserved for future features.");
+    DEBUG_LOG("Monitoring input...");
     
     // Set up audio callback
     hw.SetAudioBlockSize(64);  // 64 samples per block
@@ -1887,28 +2459,9 @@ int main(void)
     while (true)
     {
         uint32_t now = System::GetNow();
+        ServicePatternStorage(now);
 
-        // Drain incoming CDC bytes and parse complete MIDI IN lines.
-        // This is done early so MIDI latency stays low.
-        {
-            size_t w = s_midi_in_write_idx;
-            while (s_midi_in_read_idx != w)
-            {
-                uint8_t b = s_midi_in_ring[s_midi_in_read_idx];
-                s_midi_in_read_idx = (s_midi_in_read_idx + 1) % kMidiInRingSize;
-
-                if (b == '\n' || s_midi_in_line_len >= sizeof(s_midi_in_line) - 1)
-                {
-                    s_midi_in_line[s_midi_in_line_len] = '\0';
-                    ParseMidiInLine(s_midi_in_line);
-                    s_midi_in_line_len = 0;
-                }
-                else if (b != '\r')
-                {
-                    s_midi_in_line[s_midi_in_line_len++] = static_cast<char>(b);
-                }
-            }
-        }
+        ServiceMidiIn();
 
         // Mirror BPM into a plain float global: AudioCallback runs before the
         // #include "menu_generated.inc" point where kBpmParam is declared, so
@@ -1970,6 +2523,30 @@ int main(void)
             }
         }
 
+        // ---- button_prog_sw: en mode PLAY (root page ou lecture active),
+        //      cycle la direction de lecture : avant -> arrière -> ping-pong -> avant ----
+        bool in_play_mode = s_playing
+                            || (s_menu_depth == 0 && !s_editing_numeric && !s_poly_wheel_active);
+        if (prog_sw_changed && prog_sw_pressed && in_play_mode)
+        {
+            if (s_playback_direction == 0)
+                s_playback_direction = 1;
+            else if (s_playback_direction == 1)
+            {
+                s_playback_direction = 2;
+                // Initialise l'index ping-pong sur le step actuel pour ne pas sauter de note
+                int stepCount = ClampedPolyStepCount();
+                if (stepCount > 1 && s_poly_play_step >= 0 && s_poly_play_step < stepCount)
+                    s_pingpong_index = s_poly_play_step;
+                else
+                    s_pingpong_index = 0;
+            }
+            else
+            {
+                s_playback_direction = 0;
+            }
+        }
+
         // ---- encoder_prog: adjust the focused ENV1/VCF/LFO parameter directly
         //      (no need to enter the submenu). In the poly wheel, a ROSE
         //      (FIXED) step's stored transpose is edited here. Outside those
@@ -1995,6 +2572,16 @@ int main(void)
                 SendPolyState();
                 last_poly_send = now;
             }
+        }
+        else if (dir_prog != 0 && s_poly_wheel_active)
+        {
+            // Outside FIXED steps, encoder_prog adjusts the global gate length.
+            int32_t prevGate = s_gate_length_pct;
+            CycleGateLength(dir_prog);
+            if (s_gate_length_pct != prevGate)
+                MarkSettingsDirty(now);
+            SendPolyState();
+            last_poly_send = now;
         }
         else if (dir_prog != 0)
         {
@@ -2109,11 +2696,14 @@ int main(void)
                     step.fixedTranspose = s_prog_transpose_degrees; // capture current prog transpose
                 MarkSettingsDirty(now);  // Mark poly state change for persistence
                 // If the edited step is currently sounding, apply it live so a
-                // gray step immediately becomes a rest and a note/chord step
-                // starts/stops on the spot.
+                // note/chord/fixed step starts on the spot. Switching to gray
+                // only releases the internal audio voices (tie: MIDI keeps ringing).
                 if (s_playing && s_poly_cursor == s_poly_play_step)
                 {
-                    TriggerPolyStep(s_poly_play_step);
+                    if (step.state == POLY_OFF)
+                        ReleaseSequencerVoices();
+                    else
+                        TriggerPolyStep(s_poly_play_step);
                 }
             }
             SendPolyState();
@@ -2201,7 +2791,37 @@ int main(void)
             if (now - last_poly_step_ms >= stepDurationMs)
             {
                 int stepCount = ClampedPolyStepCount();
-                s_poly_play_step = (s_poly_play_step + 1) % stepCount;
+
+                // Advance the playhead according to the selected direction
+                if (s_playback_direction == 0)
+                {
+                    // Forward
+                    s_poly_play_step = (s_poly_play_step + 1) % stepCount;
+                }
+                else if (s_playback_direction == 1)
+                {
+                    // Backward
+                    s_poly_play_step = (s_poly_play_step - 1 + stepCount) % stepCount;
+                }
+                else
+                {
+                    // Ping-pong: 0,1,...,N-2,N-1,N-2,...,1,0,1,...
+                    // Un index monotonique garantit que chaque step est visité
+                    // et que les extrémités ne sont pas sautées au changement de mode.
+                    if (stepCount <= 2)
+                    {
+                        s_poly_play_step = (s_poly_play_step + 1) % stepCount;
+                    }
+                    else
+                    {
+                        int32_t period = 2 * (stepCount - 1);
+                        s_pingpong_index = (s_pingpong_index + 1) % period;
+                        if (s_pingpong_index < stepCount)
+                            s_poly_play_step = s_pingpong_index;
+                        else
+                            s_poly_play_step = period - s_pingpong_index;
+                    }
+                }
 
                 // AUTO mode: change the global transposition every N steps,
                 // constrained to degrees of the current scale/root/octave.
@@ -2239,6 +2859,21 @@ int main(void)
             s_arp_last_note_ms = now;
         }
 
+        // ---- Scheduled MIDI Note Offs driven by gate length (< 100 %).
+        //      MIDI-only: this closes the external Note On/Off pair after
+        //      GateLengthMs() but never touches the internal OSC/ENV1/VCA
+        //      chain, which is triggered once per step (TriggerPolyStep/
+        //      PlayArpNote) and runs its own ADSR shape independently of the
+        //      gate percentage (see AudioCallback's ENV1 gate).
+        for (int v = 0; v < kMaxChordVoices; ++v)
+        {
+            if (s_gate_notes[v] != 0xFF && System::GetNow() >= s_gate_note_off_ms[v])
+            {
+                s_midi_out.SendNoteOff(s_gate_notes[v], 0, 0);
+                s_gate_notes[v] = 0xFF;
+            }
+        }
+
         // =====================================================================
         // NAVIGATION STATE MACHINE (generic tree, same logic at every depth)
         // Suspended while the poly step wheel overlay is shown.
@@ -2255,6 +2890,8 @@ int main(void)
                 int32_t newValue = p->value + dir_menu * p->step;
                 int32_t clamped = newValue < p->minValue ? p->minValue
                                 : (newValue > p->maxValue ? p->maxValue : newValue);
+                if (p == &kPatchLoadParam)
+                    clamped = NextUsedPatchSlot(p->value, dir_menu);
                 if (clamped != p->value)
                 {
                     p->value = clamped;
@@ -2323,7 +2960,8 @@ int main(void)
                     s_editing_node->onConfirm(s_editing_node->numeric->value);
                 s_editing_numeric = false;
                 s_editing_node = nullptr;
-                SendMenuPath();
+                if (!s_poly_wheel_active)
+                    SendMenuPath();
                 last_menu_send = now;
             }
             else
@@ -2338,6 +2976,9 @@ int main(void)
                         s_editing_numeric = true;
                         s_editing_node = selected;
                         s_editing_original_value = selected->numeric->value;
+                        if (selected->numeric == &kPatchLoadParam)
+                            kPatchLoadParam.value = NextUsedPatchSlot(kPatchLoadParam.value, 0);
+                        s_patch_error = false;
                         SendEditState();
                     }
                     else if (selected->childCount > 0 && s_menu_depth + 1 < kMaxMenuDepth)

@@ -12,8 +12,10 @@
 #include "Arduino_GFX_Library.h"
 #include "XPowersLib.h"
 #include "TouchDrvCSTXXX.hpp"
+#include "sd_patterns.h"
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSans18pt7b.h>
 #include <Fonts/FreeSans24pt7b.h>
 
@@ -66,6 +68,8 @@ static bool s_touch_ok = false;
 #define C_WHITE   RGB565_WHITE
 #define C_ORANGE  0xFDA0
 #define C_DKGRAY  0x4208
+#define C_SURFACE 0x1082
+#define C_MUTED   0xA514
 
 // Pale/pastel accent palette (softer than the raw neon colors from
 // menu.json) used for the root menu wheel, one per category, in the same
@@ -91,8 +95,8 @@ static bool s_touch_ok = false;
 // entry to the relevant array below and update its count -- keep both
 // firmwares' trees in sync (same order, same child counts).
 //
-// Navigation is driven by "NAV,P=<path>" frames from the Daisy over USB
-// (relayed by usb_bridge.py): <path> is a dot-separated list of child
+// Navigation is driven by "NAV,P=<path>" frames from the Daisy over UART:
+// <path> is a dot-separated list of child
 // indices from the root, e.g. "0" = OSC highlighted at root, "0.0" = ONDE
 // highlighted inside the OSC submenu, "0.0.1" = SQUARE highlighted inside
 // ONDE's waveform list.
@@ -131,6 +135,12 @@ static int32_t s_edit_value = 0;
 static int32_t s_edit_min   = 0;
 static int32_t s_edit_max   = 0;
 static String  s_edit_unit;
+
+// True while editing an FX slot's Time/Decay control AND that slot's type is
+// currently Delay: the raw value is a tempo-synced note division index, not
+// literal ms (see FxSlot::ApplyParameters in daisy/include/fx_chain.h), so
+// the edit ring shows the resolved division label ("1/8", ...) instead.
+static bool s_edit_is_fx_delay_time = false;
 
 // Root-wheel status snapshot, driven by "STAT,BPM=..,ROOT=..,SCALE=..,PLAY=..,NOTE=.."
 // frames from the Daisy (see SendPlayStatus in daisy/src/main.cpp). Shown in
@@ -189,6 +199,14 @@ static int32_t s_lfo2_sync  = 0;
 static int32_t s_lfo2_amp   = 50;
 static int32_t s_lfo2_phase = 0;
 
+// FX chain slot types, driven by "FXS,T1=..,T2=..,T3=..,T4=.." frames from
+// the Daisy (see SendNextStatusFrame in daisy/src/main.cpp). Index into
+// kFX_fx1_typeOptions (same options list reused for all 4 slots).
+static int32_t s_fx1_type = 0;
+static int32_t s_fx2_type = 0;
+static int32_t s_fx3_type = 0;
+static int32_t s_fx4_type = 0;
+
 // Matrix routing state, driven by "MAT,S1=..,D1=..,A1=..,S2=..,D2=..,A2=.."
 // frames from the Daisy (see SendPlayStatus in daisy/src/main.cpp).
 static int32_t s_mat1_src = 0;
@@ -217,6 +235,9 @@ static int32_t s_env2_release_drawn   = -1;
 static int32_t s_vcf_type_drawn      = -1;
 static int32_t s_vcf_cutoff_drawn    = -1;
 static int32_t s_vcf_resonance_drawn = -1;
+static int32_t s_vcf_key_drawn = -1;
+static int32_t s_vcf_drive_drawn = -1;
+static int32_t s_vcf_env_drawn = -101;
 static int32_t s_lfo1_shape_drawn = -1;
 static int32_t s_lfo1_rate_drawn  = -1;
 static int32_t s_lfo1_sync_drawn  = -1;
@@ -227,6 +248,10 @@ static int32_t s_lfo2_rate_drawn  = -1;
 static int32_t s_lfo2_sync_drawn  = -1;
 static int32_t s_lfo2_amp_drawn   = -1;
 static int32_t s_lfo2_phase_drawn = -1;
+static int32_t s_fx1_type_drawn = -1;
+static int32_t s_fx2_type_drawn = -1;
+static int32_t s_fx3_type_drawn = -1;
+static int32_t s_fx4_type_drawn = -1;
 static int32_t s_mat1_src_drawn = -1;
 static int32_t s_mat1_dst_drawn = -1;
 static int32_t s_mat1_amt_drawn = -1;
@@ -246,14 +271,35 @@ static char    s_poly_states[kMaxPolySteps + 1] = {};
 static int32_t s_poly_degree  = 0;
 static int     s_poly_play    = -1;
 static int     s_poly_note    = -1; // MIDI note currently sounding (-1 = none)
+static int32_t s_poly_gate    = 100; // gate length % shown on the wheel
 
 // Audio waveform buffer for display
 static constexpr int kAudioSampleCount = 12;
 static int8_t s_audio_samples[kAudioSampleCount] = { 0 };
 static bool s_audio_valid = false;
+static bool s_osc_valid = false;
+static int32_t s_osc_wave = 0;
+static int32_t s_osc_coarse = 0;
+static int32_t s_osc_fine = 0;
+static int32_t s_osc_pulse = 50;
+static int32_t s_osc_sub = 30;
+static int32_t s_osc_hard = 0;
+static int32_t s_osc_fm_amount = 0;
+static int32_t s_osc_fm_ratio = 0;
+static int32_t s_osc_fm_fine = 0;
+static int32_t s_osc_fm_wave = 0;
+
+static constexpr int kPresetSlotCount = 128;
+struct PresetState {
+    int current, mode, slot, wave, bpm, root, scale, filter, cutoff, steps, error;
+    int sdReady, busy;
+    bool used[kPresetSlotCount];
+};
+static PresetState s_preset = {};
+static bool s_preset_valid = false;
 
 static const int kWheelGapDeg       = 3;   // black gap between wedges, in degrees
-static const int kWheelOuterBulge   = 12;  // selected wedge extends further out
+static const int kWheelOuterBulge   = 0;
 static const int kWheelInnerRadius  = 155; // thin wedge ring, most of the screen goes to the center hub
 static const int kWheelCenterRadius = 140; // decorative center hub, kept as visible as possible
 
@@ -280,6 +326,42 @@ static String parseStringField(const String& s, const char* key)
 // Parses "NAV,P=<path>" (a dot-separated list of child indices from the
 // root) and walks the mirrored menu tree to resolve which node is currently
 // being browsed and which of its children is highlighted, then redraws.
+static bool applyPresetState(const String& frame)
+{
+    const String bitmap = parseStringField(frame, "U=");
+    const char* digits = bitmap.c_str();
+    if (strlen(digits) != kPresetSlotCount / 4)
+        return false;
+    PresetState next = {};
+    const char* hexDigits = "0123456789ABCDEF";
+    for (int group = 0; group < kPresetSlotCount / 4; ++group)
+    {
+        const char* digit = strchr(hexDigits, digits[group]);
+        if (!digit)
+            return false;
+        const int bits = digit - hexDigits;
+        for (int bit = 0; bit < 4; ++bit)
+            next.used[group * 4 + bit] = (bits & (1 << bit)) != 0;
+    }
+    next.current = constrain(parseLongField(frame, "C="), 0, kPresetSlotCount);
+    next.mode = constrain(parseLongField(frame, "M="), 0, 2);
+    next.slot = constrain(parseLongField(frame, "S="), 0, kPresetSlotCount);
+    next.wave = parseLongField(frame, "W=");
+    next.bpm = parseLongField(frame, "B=");
+    next.root = parseLongField(frame, "R=");
+    next.scale = parseLongField(frame, "G=");
+    next.filter = parseLongField(frame, "F=");
+    next.cutoff = parseLongField(frame, "H=");
+    next.steps = parseLongField(frame, "N=");
+    next.error = parseLongField(frame, "E=");
+    next.sdReady = parseLongField(frame, "SD=");
+    next.busy = parseLongField(frame, "IO=");
+    const bool changed = !s_preset_valid || memcmp(&next, &s_preset, sizeof(next)) != 0;
+    s_preset = next;
+    s_preset_valid = true;
+    return changed;
+}
+
 static void applyNavPath(const String& path)
 {
     int indices[kMaxMenuDepth];
@@ -533,8 +615,8 @@ static void drawMidiActivityIcons(int cx, int cy)
     const int iconW   = 14;   // arrow width
     const int iconH   = 12;   // arrow height
     const int gap     = 6;
-    const int xBase   = cx - iconW - gap / 2;
-    const int yBase   = cy + 80; // above the PLAY/STOP row
+    const int xBase   = cx + 68;
+    const int yBase   = cy + 87;
 
     uint32_t now = millis();
     if (s_midi_in_active && (now - s_midi_in_decay_ms >= kMidiActivityDecayMs))
@@ -580,86 +662,103 @@ static void drawMidiActivityIcons(int cx, int cy)
 // polymetric wheel: BPM, currently-sounding MIDI note, root+scale, live
 // waveform and PLAY/STOP transport. When `showStepCount` is true (poly
 // wheel) the active step count is added at the very top of the hub.
+static void drawHubText(const char* text, int centerX, int top, int maxWidth,
+                        const GFXfont* font, uint16_t color)
+{
+    int16_t boundsX, boundsY;
+    uint16_t width, height;
+    canvas->setFont(font);
+    canvas->setTextSize(1);
+    canvas->getTextBounds(text, 0, 0, &boundsX, &boundsY, &width, &height);
+    if (width > maxWidth && font == &FreeSans24pt7b)
+    {
+        canvas->setFont(&FreeSans18pt7b);
+        canvas->getTextBounds(text, 0, 0, &boundsX, &boundsY, &width, &height);
+    }
+    if (width > maxWidth)
+    {
+        canvas->setFont(&FreeSans12pt7b);
+        canvas->getTextBounds(text, 0, 0, &boundsX, &boundsY, &width, &height);
+    }
+    if (width > maxWidth)
+    {
+        canvas->setFont(&FreeSans9pt7b);
+        canvas->getTextBounds(text, 0, 0, &boundsX, &boundsY, &width, &height);
+    }
+    canvas->setTextColor(color);
+    canvas->setCursor(centerX - width / 2 - boundsX, top - boundsY);
+    canvas->print(text);
+}
+
+static uint16_t currentMenuAccent()
+{
+    if (s_menu_depth > 0 && s_menu_stack[1]->color != 0)
+        return s_menu_stack[1]->color;
+    return C_PALE_ACCENT;
+}
+
+static bool showingPlayHub()
+{
+    return s_menu_depth == 0 || s_menu_stack[1]->children == kPlaySubmenu;
+}
+
 static void drawStatusHub(int cx, int cy, bool showStepCount)
 {
-    int16_t  tx1, ty1;
-    uint16_t tw, th;
-    char     buf[24];
-
-    int yOffset = showStepCount ? -18 : 0;
-
-    // Optional step count label, only on the poly wheel
-    if (showStepCount)
+    const bool atRoot = s_menu_depth == 0 && !showStepCount;
+    const int rootSelection = constrain(s_menu_selected[0], 0, kRootMenuCount - 1);
+    const uint16_t accent = atRoot ? kRootMenu[rootSelection].color : C_PALE_PLAY;
     {
-        snprintf(buf, sizeof(buf), "%d PAS", s_poly_count);
-        canvas->setFont(&FreeSans12pt7b);
-        canvas->setTextColor(C_PALE_ACCENT);
-        canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 138 - ty1);
-        canvas->print(buf);
+        char presetLabel[32];
+        if (s_preset_valid && s_preset.current > 0)
+            snprintf(presetLabel, sizeof(presetLabel), "N. %03d", s_preset.current);
+        else
+            snprintf(presetLabel, sizeof(presetLabel), "SEQUENCE");
+        drawHubText(presetLabel, cx, cy - 119, 140, &FreeSans12pt7b, accent);
     }
-
-    // BPM at top
-    snprintf(buf, sizeof(buf), "%ld BPM", (long)s_status_bpm);
-    canvas->setFont(&FreeSans18pt7b);
-    canvas->setTextColor(C_WHITE);
-    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 95 + yOffset - ty1);
-    canvas->print(buf);
-
-    // 440 Hz test-tone badge (top-right of BPM when active)
+    if (!s_status_valid)
+    {
+        drawHubText("DAISY", cx, cy - 24, 220, &FreeSans24pt7b, C_WHITE);
+        drawHubText("EN ATTENTE", cx, cy + 38, 220, &FreeSans9pt7b, C_MUTED);
+        return;
+    }
+    char summary[40];
+    snprintf(summary, sizeof(summary), "%ld", (long)s_status_bpm);
+    drawHubText(summary, cx, cy - 80, 220, &FreeSans24pt7b, C_WHITE);
+    drawHubText("BPM", cx, cy - 36, 200, &FreeSans9pt7b, C_MUTED);
+    const int rootIndex = constrain(s_status_root, 0, kPLAY_play_rootOptionCount - 1);
+    const int scaleIndex = constrain(s_status_scale, 0, kPLAY_play_scaleOptionCount - 1);
+    snprintf(summary, sizeof(summary), "%s %s   /   %s",
+             kPLAY_play_rootOptions[rootIndex].label, kPLAY_play_scaleOptions[scaleIndex].label,
+             midiNoteToName(s_poly_active ? s_poly_note : s_status_note));
+    drawHubText(summary, cx, cy - 7, 230, &FreeSans12pt7b, C_WHITE);
+    canvas->drawFastHLine(cx - 100, cy + 29, 200, C_SURFACE);
+    if (s_audio_valid)
+    {
+        int previousX = cx - 96;
+        int previousY = cy + 53 - (s_audio_samples[0] * 15 / 127);
+        for (int sample = 1; sample < kAudioSampleCount; ++sample)
+        {
+            const int nextX = cx - 96 + sample * 192 / (kAudioSampleCount - 1);
+            const int nextY = cy + 53 - (s_audio_samples[sample] * 15 / 127);
+            canvas->drawLine(previousX, previousY, nextX, nextY, accent);
+            previousX = nextX;
+            previousY = nextY;
+        }
+    }
+    else
+        canvas->drawFastHLine(cx - 96, cy + 53, 192, C_DKGRAY);
+    const uint16_t transportColor = s_status_playing ? C_PALE_ENV1 : C_MUTED;
+    drawPlayStopIcon(cx - 42, cy + 93, 6, s_status_playing, transportColor);
+    drawHubText(s_status_playing ? "PLAY" : "STOP", cx + 10, cy + 85, 90,
+                &FreeSans12pt7b, transportColor);
     if (s_status_t440)
+        drawHubText("TEST 440 Hz", cx, cy + 117, 140, &FreeSans9pt7b, C_PALE_MIDI);
+    else if (showStepCount)
     {
-        const int badgeR = 18;
-        const int badgeX = cx + (int)tw / 2 + badgeR + 12;
-        const int badgeY = cy - 95 + yOffset - (int)th / 2;
-        canvas->fillCircle(badgeX, badgeY, badgeR, C_YELLOW);
-        canvas->setFont(&FreeSans9pt7b);
-        canvas->setTextColor(C_BLACK);
-        canvas->getTextBounds("440", 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(badgeX - (int)tw / 2 - tx1, badgeY - (int)th / 2 - ty1);
-        canvas->print("440");
+        snprintf(summary, sizeof(summary), "GT:%ld%%  %d PAS",
+                 (long)s_poly_gate, s_poly_count);
+        drawHubText(summary, cx, cy + 117, 180, &FreeSans9pt7b, C_MUTED);
     }
-
-    // Root & Scale just below BPM (small)
-    int rootIdx = (s_status_root >= 0 && s_status_root < kPLAY_play_rootOptionCount) ? s_status_root : 0;
-    const char* rootLabel = kPLAY_play_rootOptions[rootIdx].label;
-    int scaleIdx = (s_status_scale >= 0 && s_status_scale < kPLAY_play_scaleOptionCount) ? s_status_scale : 0;
-    const char* scaleLabel = kPLAY_play_scaleOptions[scaleIdx].label;
-    snprintf(buf, sizeof(buf), "%s %s", rootLabel, scaleLabel);
-    canvas->setFont(&FreeSans9pt7b);
-    canvas->setTextColor(C_PALE_ACCENT);
-    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 62 + yOffset - ty1);
-    canvas->print(buf);
-
-    // Currently-sounding MIDI note (large, central)
-    const char* noteLabel = midiNoteToName(s_poly_active ? s_poly_note : s_status_note);
-    canvas->setFont(&FreeSans24pt7b);
-    canvas->setTextColor(C_WHITE);
-    canvas->getTextBounds(noteLabel, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 16 + yOffset - ty1);
-    canvas->print(noteLabel);
-
-    // Waveform under the note
-    drawWaveformDisplay(cx, cy + 50 + yOffset, 50, C_PALE_ACCENT);
-
-    // Play/Stop at bottom
-    const char* stateLabel = s_status_playing ? "PLAY" : "STOP";
-    uint16_t    stateColor = s_status_playing ? C_GREEN : C_RED;
-    canvas->setFont(&FreeSans12pt7b);
-    canvas->getTextBounds(stateLabel, 0, 0, &tx1, &ty1, &tw, &th);
-    const int iconSize = 10;
-    const int gap      = 8;
-    const int rowY     = cy + 110 + yOffset;
-    int blockW  = iconSize * 2 + gap + (int)tw;
-    int startX  = cx - blockW / 2;
-    drawPlayStopIcon(startX + iconSize, rowY, iconSize, s_status_playing, stateColor);
-    canvas->setTextColor(stateColor);
-    canvas->setCursor(startX + iconSize * 2 + gap - tx1, rowY - (int)th / 2 - ty1);
-    canvas->print(stateLabel);
-
-    // MIDI IN/OUT activity arrows (only relevant in play mode)
     drawMidiActivityIcons(cx, cy);
 }
 
@@ -669,13 +768,6 @@ static void drawEnvelopeHub(int cx, int cy, const char* label)
 {
     int16_t  tx1, ty1;
     uint16_t tw, th;
-
-    // Category / parameter label at the top
-    canvas->setFont(&FreeSans12pt7b);
-    canvas->setTextColor(C_PALE_ENV1);
-    canvas->getTextBounds(label, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 110 - ty1);
-    canvas->print(label);
 
     // Large ADSR shape in the center (slightly smaller to leave room for value)
     drawEnvelopeShape(cx, cy - 18, 84, s_env1_attack, s_env1_decay, s_env1_sustain, s_env1_release, C_PALE_ENV1);
@@ -693,7 +785,7 @@ static void drawEnvelopeHub(int cx, int cy, const char* label)
     canvas->setFont(&FreeSans24pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 102 - ty1);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 60 - ty1);
     canvas->print(buf);
 
     if (unit[0] != '\0')
@@ -701,7 +793,7 @@ static void drawEnvelopeHub(int cx, int cy, const char* label)
         canvas->setFont(&FreeSans12pt7b);
         canvas->setTextColor(C_PALE_ENV1);
         canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 138 - ty1);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 106 - ty1);
         canvas->print(unit);
     }
 }
@@ -712,13 +804,6 @@ static void drawEnvelope2Hub(int cx, int cy, const char* label)
 {
     int16_t  tx1, ty1;
     uint16_t tw, th;
-
-    // Category / parameter label at the top
-    canvas->setFont(&FreeSans12pt7b);
-    canvas->setTextColor(C_PALE_ENV2);
-    canvas->getTextBounds(label, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 110 - ty1);
-    canvas->print(label);
 
     // Large ADSR shape in the center (slightly smaller to leave room for value)
     drawEnvelopeShape(cx, cy - 18, 84, s_env2_attack, s_env2_decay, s_env2_sustain, s_env2_release, C_PALE_ENV2);
@@ -736,7 +821,7 @@ static void drawEnvelope2Hub(int cx, int cy, const char* label)
     canvas->setFont(&FreeSans24pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 102 - ty1);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 60 - ty1);
     canvas->print(buf);
 
     if (unit[0] != '\0')
@@ -744,7 +829,7 @@ static void drawEnvelope2Hub(int cx, int cy, const char* label)
         canvas->setFont(&FreeSans12pt7b);
         canvas->setTextColor(C_PALE_ENV2);
         canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 138 - ty1);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 106 - ty1);
         canvas->print(unit);
     }
 }
@@ -780,7 +865,7 @@ static void drawEnvelopeEditScreen(const char* label, int32_t value, int32_t min
     canvas->setFont(&FreeSans24pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(valBuf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 155 - ty1);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 125 - ty1);
     canvas->print(valBuf);
 
     if (unit != nullptr && unit[0] != '\0')
@@ -788,18 +873,11 @@ static void drawEnvelopeEditScreen(const char* label, int32_t value, int32_t min
         canvas->setFont(&FreeSans12pt7b);
         canvas->setTextColor(C_PALE_ENV1);
         canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 200 - ty1);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 174 - ty1);
         canvas->print(unit);
     }
 
     // Bottom hint
-    canvas->setFont(&FreeSans9pt7b);
-    canvas->setTextColor(C_DKGRAY);
-    const char* hint = "PRESS TO VALIDATE";
-    canvas->getTextBounds(hint, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 210 - ty1);
-    canvas->print(hint);
-
     canvas->flush();
 }
 
@@ -834,7 +912,7 @@ static void drawEnvelope2EditScreen(const char* label, int32_t value, int32_t mi
     canvas->setFont(&FreeSans24pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(valBuf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 155 - ty1);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 125 - ty1);
     canvas->print(valBuf);
 
     if (unit != nullptr && unit[0] != '\0')
@@ -842,18 +920,11 @@ static void drawEnvelope2EditScreen(const char* label, int32_t value, int32_t mi
         canvas->setFont(&FreeSans12pt7b);
         canvas->setTextColor(C_PALE_ENV2);
         canvas->getTextBounds(unit, 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 200 - ty1);
+        canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 174 - ty1);
         canvas->print(unit);
     }
 
     // Bottom hint
-    canvas->setFont(&FreeSans9pt7b);
-    canvas->setTextColor(C_DKGRAY);
-    const char* hint = "PRESS TO VALIDATE";
-    canvas->getTextBounds(hint, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 210 - ty1);
-    canvas->print(hint);
-
     canvas->flush();
 }
 
@@ -869,15 +940,11 @@ static void drawVcfHub(int cx, int cy, const char* label)
     int typeIdx = (s_vcf_type >= 0 && s_vcf_type < kVCF_vcf_typeOptionCount) ? s_vcf_type : 0;
     const char* typeLabel = kVCF_vcf_typeOptions[typeIdx].label;
 
-    canvas->setFont(&FreeSans24pt7b);
-    canvas->setTextColor(C_PALE_VCF);
-    canvas->getTextBounds(typeLabel, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 110 - ty1);
-    canvas->print(typeLabel);
+    drawHubText(typeLabel, cx, cy - 80, 220, &FreeSans24pt7b, C_WHITE);
 
     // Draw a stylized filter response curve in the center hub
     const int halfW = 110;
-    const int halfH = 70;
+    const int halfH = 34;
     int x0 = cx - halfW;
     int y0 = cy + halfH;   // baseline (low gain)
     int x1 = cx + halfW;
@@ -895,12 +962,13 @@ static void drawVcfHub(int cx, int cy, const char* label)
     float resPct = (float)s_vcf_resonance * 0.01f;
     int peakH = (int)(resPct * (halfH * 0.9f));
     int yPeak = y0 - halfH - peakH;
-    int yPlateau = y0 - (int)(halfH * 0.55f);
+    int yPlateau = cy;
 
     uint16_t curveColor = C_PALE_VCF;
 
     // Box outline for the response graph
-    canvas->drawRect(x0 - 2, y1 - 2, x1 - x0 + 4, y0 - y1 + 4, 0x8410);
+    canvas->drawFastHLine(x0, y0, x1 - x0, C_DKGRAY);
+    canvas->drawFastVLine(xCut, y1, y0 - y1, C_SURFACE);
 
     switch (typeIdx)
     {
@@ -921,12 +989,15 @@ static void drawVcfHub(int cx, int cy, const char* label)
             // thick line for the downward slope. Avoids the previous per-pixel
             // drawFastVLine loop (220 calls per redraw) that caused menu lag.
             if (yPlateau < y0)
-                canvas->fillRect(x0, yPlateau, xCut - x0, y0 - yPlateau, 0x2D13);
+                canvas->fillRect(x0, yPlateau, xCut - x0, y0 - yPlateau, C_SURFACE);
             if (xSlopeEnd > xCut && yPeak < y0)
             {
                 // Approximate the slope fill with a filled triangle.
-                canvas->fillTriangle(xCut, yPeak, xSlopeEnd, y0, xCut, y0, 0x2D13);
+                canvas->fillTriangle(xCut, yPeak, xSlopeEnd, y0, xCut, y0, C_SURFACE);
             }
+            canvas->drawLine(x0, yPlateau, xCut, yPlateau, curveColor);
+            canvas->drawLine(xCut, yPlateau, xCut, yPeak, curveColor);
+            canvas->drawLine(xCut, yPeak, xSlopeEnd, y0, curveColor);
             break;
         }
         case 2: // BP12
@@ -968,19 +1039,21 @@ static void drawVcfHub(int cx, int cy, const char* label)
 
     // Cutoff value (left-bottom of curve box)
     char buf[24];
-    snprintf(buf, sizeof(buf), "%ld Hz", (long)s_vcf_cutoff);
-    canvas->setFont(&FreeSans12pt7b);
-    canvas->setTextColor(C_WHITE);
-    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(x0 - tx1, y0 + 26 - ty1);
-    canvas->print(buf);
-
-    // Resonance value (right-bottom of curve box)
-    snprintf(buf, sizeof(buf), "RES %ld%%", (long)s_vcf_resonance);
-    canvas->setTextColor(C_PALE_VCF);
-    canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(x1 - (int)tw - tx1, y0 + 26 - ty1);
-    canvas->print(buf);
+    if (s_vcf_cutoff >= 1000)
+        snprintf(buf, sizeof(buf), "%.2f kHz", s_vcf_cutoff / 1000.0f);
+    else
+        snprintf(buf, sizeof(buf), "%ld Hz", (long)s_vcf_cutoff);
+    drawHubText(buf, cx, cy + 64, 218, &FreeSans18pt7b, C_WHITE);
+    const int focus = s_menu_selected[1];
+    if (focus == 3)
+        snprintf(buf, sizeof(buf), "KEY %ld%%", (long)s_vcf_key);
+    else if (focus == 4)
+        snprintf(buf, sizeof(buf), "DRIVE %ld%%", (long)s_vcf_drive);
+    else if (focus == 5)
+        snprintf(buf, sizeof(buf), "ENV %+ld%%", (long)s_vcf_env);
+    else
+        snprintf(buf, sizeof(buf), "RES %ld%%", (long)s_vcf_resonance);
+    drawHubText(buf, cx, cy + 105, 170, &FreeSans9pt7b, C_PALE_VCF);
 }
 
 // Illustrative (not sample-accurate) preview of ~1.5 cycles of an LFO shape,
@@ -1031,7 +1104,7 @@ static void drawLfoWaveform(int cx, int cy, int halfW, int halfH, int shapeIdx, 
         first = false;
     }
 
-    canvas->drawRect(x0 - 2, cy - halfH - 2, (x1 - x0) + 4, halfH * 2 + 4, 0x8410);
+    canvas->drawFastHLine(x0, cy + halfH + 5, x1 - x0, C_SURFACE);
 }
 
 // Center hub variant used inside the LFO menu for LFO1: the selected shape's
@@ -1045,13 +1118,8 @@ static void drawLfoHub(int cx, int cy, const char* label)
     int shapeIdx = (s_lfo1_shape >= 0 && s_lfo1_shape < kLFO_lfo1_shapeOptionCount) ? s_lfo1_shape : 0;
     const char* shapeLabel = kLFO_lfo1_shapeOptions[shapeIdx].label;
 
-    canvas->setFont(&FreeSans18pt7b);
-    canvas->setTextColor(C_PALE_LFO);
-    canvas->getTextBounds(shapeLabel, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 100 - ty1);
-    canvas->print(shapeLabel);
-
-    drawLfoWaveform(cx, cy - 8, 105, 58, shapeIdx, (float)s_lfo1_phase, C_PALE_LFO);
+    drawHubText(shapeLabel, cx, cy - 80, 220, &FreeSans24pt7b, C_WHITE);
+    drawLfoWaveform(cx, cy, 105, 32, shapeIdx, (float)s_lfo1_phase, C_PALE_LFO);
 
     // Rate (or Sync division, when synced) below the curve
     char buf[24];
@@ -1063,7 +1131,7 @@ static void drawLfoHub(int cx, int cy, const char* label)
     canvas->setFont(&FreeSans12pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 96 - ty1);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 60 - ty1);
     canvas->print(buf);
 
     // Amount (bottom-left) and Phase (bottom-right), same corner layout as VCF's cutoff/res
@@ -1071,12 +1139,12 @@ static void drawLfoHub(int cx, int cy, const char* label)
     canvas->setFont(&FreeSans9pt7b);
     canvas->setTextColor(C_PALE_LFO);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - 105 - tx1, cy + 125 - ty1);
+    canvas->setCursor(cx - 92 - tx1, cy + 98 - ty1);
     canvas->print(buf);
 
     snprintf(buf, sizeof(buf), "%ld deg", (long)s_lfo1_phase);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx + 105 - (int)tw - tx1, cy + 125 - ty1);
+    canvas->setCursor(cx + 92 - (int)tw - tx1, cy + 98 - ty1);
     canvas->print(buf);
 }
 
@@ -1091,13 +1159,8 @@ static void drawLfo2Hub(int cx, int cy, const char* label)
     int shapeIdx = (s_lfo2_shape >= 0 && s_lfo2_shape < kLFO_lfo2_shapeOptionCount) ? s_lfo2_shape : 0;
     const char* shapeLabel = kLFO_lfo2_shapeOptions[shapeIdx].label;
 
-    canvas->setFont(&FreeSans18pt7b);
-    canvas->setTextColor(C_PALE_LFO);
-    canvas->getTextBounds(shapeLabel, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 100 - ty1);
-    canvas->print(shapeLabel);
-
-    drawLfoWaveform(cx, cy - 8, 105, 58, shapeIdx, (float)s_lfo2_phase, C_PALE_LFO);
+    drawHubText(shapeLabel, cx, cy - 80, 220, &FreeSans24pt7b, C_WHITE);
+    drawLfoWaveform(cx, cy, 105, 32, shapeIdx, (float)s_lfo2_phase, C_PALE_LFO);
 
     // Rate (or Sync division, when synced) below the curve
     char buf[24];
@@ -1109,7 +1172,7 @@ static void drawLfo2Hub(int cx, int cy, const char* label)
     canvas->setFont(&FreeSans12pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 96 - ty1);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + 60 - ty1);
     canvas->print(buf);
 
     // Amount (bottom-left) and Phase (bottom-right)
@@ -1117,12 +1180,12 @@ static void drawLfo2Hub(int cx, int cy, const char* label)
     canvas->setFont(&FreeSans9pt7b);
     canvas->setTextColor(C_PALE_LFO);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - 105 - tx1, cy + 125 - ty1);
+    canvas->setCursor(cx - 92 - tx1, cy + 98 - ty1);
     canvas->print(buf);
 
     snprintf(buf, sizeof(buf), "%ld deg", (long)s_lfo2_phase);
     canvas->getTextBounds(buf, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx + 105 - (int)tw - tx1, cy + 125 - ty1);
+    canvas->setCursor(cx + 92 - (int)tw - tx1, cy + 98 - ty1);
     canvas->print(buf);
 }
 
@@ -1153,11 +1216,7 @@ static void drawMatrixHub(int cx, int cy)
         snprintf(routeBuf, sizeof(routeBuf), "%s > %s", srcLabel, dstLabel);
 
         // Route line (e.g. "LFO1 > PITCH")
-        canvas->setFont(&FreeSans18pt7b);
-        canvas->setTextColor(active ? C_WHITE : C_DKGRAY);
-        canvas->getTextBounds(routeBuf, 0, 0, &tx1, &ty1, &tw, &th);
-        canvas->setCursor(cx - (int)tw / 2 - tx1, y - ty1);
-        canvas->print(routeBuf);
+        drawHubText(routeBuf, cx, y, 230, &FreeSans12pt7b, active ? C_WHITE : C_MUTED);
 
         // Amount below the route
         char amtBuf[16];
@@ -1173,19 +1232,195 @@ static void drawMatrixHub(int cx, int cy)
     drawRoute(2, s_mat2_src, s_mat2_dst, (int)s_mat2_amt, cy + 56);
 }
 
+// Center hub variant used while browsing the top-level FX list (FX1..FX4):
+// shows all four slots' active effect at once (not just the highlighted
+// one), so moving the cursor between slots never hides what the others are
+// currently doing. The highlighted slot (cursor position) is drawn brighter.
+static void drawFxHub(int cx, int cy)
+{
+    int16_t  tx1, ty1;
+    uint16_t tw, th;
+
+    canvas->setFont(&FreeSans12pt7b);
+    canvas->setTextColor(C_PALE_FX);
+    canvas->getTextBounds("FX", 0, 0, &tx1, &ty1, &tw, &th);
+    canvas->setCursor(cx - (int)tw / 2 - tx1, cy - 105 - ty1);
+    canvas->print("FX");
+
+    const int32_t slotTypes[4] = { s_fx1_type, s_fx2_type, s_fx3_type, s_fx4_type };
+    const int focus = (s_menu_selected[1] >= 0 && s_menu_selected[1] < 4) ? s_menu_selected[1] : -1;
+
+    for (int slot = 0; slot < 4; ++slot)
+    {
+        int32_t idx = slotTypes[slot];
+        if (idx < 0 || idx >= kFX_fx1_typeOptionCount)
+            idx = 0;
+        bool focused = (slot == focus);
+        bool active  = (idx != 0);
+
+        char buf[24];
+        snprintf(buf, sizeof(buf), "FX%d %s", slot + 1, kFX_fx1_typeOptions[idx].label);
+
+        uint16_t color = focused ? C_WHITE : (active ? C_PALE_FX : C_MUTED);
+        const GFXfont* font = focused ? &FreeSans12pt7b : &FreeSans9pt7b;
+        int y = cy - 57 + slot * 38;
+        drawHubText(buf, cx, y, 230, font, color);
+    }
+}
+
 // Generic renderer used at every navigation depth: draws `parent`'s children
 // as a pie-wedge wheel (same format as the main menu), the `selectedIndex`
 // wedge highlighted, and `parent`'s own label in the decorative center hub
 // (so the hub reads "MENU" at the root, "OSC" inside the OSC submenu, etc).
 // Items with a non-default color (see MenuColor on the Daisy side) keep a
 // colored outline even when idle, e.g. blue for OSC, green for SETUP.
+static void drawOscHub(int cx, int cy)
+{
+    const MenuNode* parent = s_menu_stack[s_menu_depth];
+    const bool inFm = s_menu_depth >= 2 && s_menu_stack[2]->children == kOscFmSubmenu;
+    if (!s_osc_valid)
+    {
+        drawHubText("EN ATTENTE", cx, cy - 10, 220, &FreeSans12pt7b, C_MUTED);
+        return;
+    }
+    const int wave = constrain(s_osc_wave, 0, kOSC_osc_waveOptionCount - 1);
+    const int modWave = constrain(s_osc_fm_wave, 0, kOSC_osc_fm_modwaveOptionCount - 1);
+    const bool fm = wave == 4 || inFm;
+    drawHubText(kOSC_osc_waveOptions[wave].label, cx, cy - 80, 220,
+                &FreeSans24pt7b, C_WHITE);
+    char summary[48];
+    if (fm)
+    {
+        canvas->drawCircle(cx - 64, cy - 1, 22, C_PALE_OSC);
+        canvas->drawCircle(cx + 64, cy - 1, 22, C_PALE_OSC);
+        drawHubText("M", cx - 64, cy - 10, 30, &FreeSans9pt7b, C_WHITE);
+        drawHubText("C", cx + 64, cy - 10, 30, &FreeSans9pt7b, C_WHITE);
+        canvas->drawFastHLine(cx - 40, cy - 1, 80, C_PALE_OSC);
+        canvas->fillTriangle(cx + 40, cy - 1, cx + 32, cy - 5, cx + 32, cy + 3, C_PALE_OSC);
+        snprintf(summary, sizeof(summary), "RATIO %.2fx   /   %ld%%",
+                 s_osc_fm_ratio + s_osc_fm_fine * 0.01f, (long)s_osc_fm_amount);
+        drawHubText(summary, cx, cy + 37, 234, &FreeSans12pt7b, C_WHITE);
+        snprintf(summary, sizeof(summary), "MOD %s%s", kOSC_osc_fm_modwaveOptions[modWave].label,
+                 wave == 4 ? "" : " / FM INACTIVE");
+        drawHubText(summary, cx, cy + 70, 224, &FreeSans9pt7b, C_MUTED);
+    }
+    else
+    {
+        static const int shapes[] = { 2, 3, 1, 0 };
+        canvas->drawFastHLine(cx - 103, cy, 206, C_SURFACE);
+        drawLfoWaveform(cx, cy, 103, 30, shapes[wave], 0.0f, C_PALE_OSC);
+        drawHubText("FORME", cx, cy + 47, 220, &FreeSans9pt7b, C_MUTED);
+    }
+    const int selected = constrain(s_menu_selected[s_menu_depth], 0, parent->childCount - 1);
+    const bool isOscParam = parent->children == kOscSubmenu && selected >= 1 && selected <= 5;
+    if (isOscParam)
+    {
+        char valueBuf[24];
+        switch (selected)
+        {
+            case 1: snprintf(valueBuf, sizeof(valueBuf), "%+ld st", s_osc_coarse); break;
+            case 2: snprintf(valueBuf, sizeof(valueBuf), "%+ld cents", s_osc_fine); break;
+            case 3: snprintf(valueBuf, sizeof(valueBuf), "%ld%%", s_osc_pulse); break;
+            case 4: snprintf(valueBuf, sizeof(valueBuf), "%ld%%", s_osc_sub); break;
+            case 5: snprintf(valueBuf, sizeof(valueBuf), "%ld%%", s_osc_hard); break;
+            default: valueBuf[0] = '\0'; break;
+        }
+        snprintf(summary, sizeof(summary), "%s  %s", parent->children[selected].label, valueBuf);
+    }
+    else
+    {
+        snprintf(summary, sizeof(summary), "%s", parent->children[selected].label);
+    }
+    drawHubText(summary, cx, cy + 108, 164, &FreeSans9pt7b,
+                isOscParam ? C_PALE_OSC : C_MUTED);
+}
+
+static void drawPresetHub(int cx, int cy)
+{
+    if (!s_preset_valid)
+    {
+        drawHubText("EN ATTENTE", cx, cy - 10, 220, &FreeSans12pt7b, C_MUTED);
+        return;
+    }
+    char text[64];
+    if (s_preset.current > 0)
+        snprintf(text, sizeof(text), "N. %03d", s_preset.current);
+    else
+        snprintf(text, sizeof(text), "COURANT");
+    drawHubText(text, cx, cy - 82, 220, &FreeSans24pt7b, C_WHITE);
+    drawHubText(s_preset.error ? "ECHEC SD" : s_preset.busy ? "TRANSFERT SD"
+                : !s_preset.sdReady ? "SD ABSENTE" : "PATTERNS SD",
+                cx, cy - 32, 230, &FreeSans12pt7b, s_preset.error ? C_RED : C_MUTED);
+    const int wave = constrain(s_preset.wave, 0, kOSC_osc_waveOptionCount - 1);
+    drawHubText(kOSC_osc_waveOptions[wave].label, cx, cy + 3, 230,
+                &FreeSans12pt7b, C_PALE_OSC);
+    const int filter = constrain(s_preset.filter, 0, kVCF_vcf_typeOptionCount - 1);
+    snprintf(text, sizeof(text), "%s  %d Hz", kVCF_vcf_typeOptions[filter].label, s_preset.cutoff);
+    drawHubText(text, cx, cy + 35, 230, &FreeSans9pt7b, C_WHITE);
+    const int root = constrain(s_preset.root, 0, kPLAY_play_rootOptionCount - 1);
+    const int scale = constrain(s_preset.scale, 0, kPLAY_play_scaleOptionCount - 1);
+    snprintf(text, sizeof(text), "%s  %s", kPLAY_play_rootOptions[root].label,
+             kPLAY_play_scaleOptions[scale].label);
+    drawHubText(text, cx, cy + 63, 220, &FreeSans9pt7b, C_WHITE);
+    snprintf(text, sizeof(text), "%d BPM / %d PAS", s_preset.bpm, s_preset.steps);
+    drawHubText(text, cx, cy + 99, 180, &FreeSans9pt7b, C_PALE_PRESETS);
+}
+
+static void drawPresetList()
+{
+    canvas->fillScreen(C_BLACK);
+    const int cx = LCD_WIDTH / 2;
+    const bool loading = s_preset.mode == 1;
+    drawHubText(loading ? "LOAD SD" : "SAVE SD", cx, 44, 240, &FreeSans24pt7b, C_PALE_PRESETS);
+    char text[48];
+    if (s_preset.current)
+        snprintf(text, sizeof(text), "EN COURS : %03d", s_preset.current);
+    else
+        snprintf(text, sizeof(text), "SON NON ASSIGNE");
+    drawHubText(text, cx, 91, 280, &FreeSans9pt7b, C_MUTED);
+    int slots[kPresetSlotCount];
+    int count = 0;
+    int selected = 0;
+    for (int slot = 1; slot <= kPresetSlotCount; ++slot)
+    {
+        if (loading && !s_preset.used[slot - 1])
+            continue;
+        if (slot == s_preset.slot)
+            selected = count;
+        slots[count++] = slot;
+    }
+    if (count == 0)
+        drawHubText(s_preset.sdReady ? "AUCUN PATTERN" : "SD ABSENTE",
+                    cx, 222, 300, &FreeSans18pt7b, C_MUTED);
+    const int first = constrain(selected - 3, 0, max(0, count - 7));
+    for (int row = 0; row < 7 && first + row < count; ++row)
+    {
+        const int slot = slots[first + row];
+        const bool used = s_preset.used[slot - 1];
+        const int top = 122 + row * 38;
+        if (first + row == selected)
+        {
+            canvas->fillRect(78, top - 5, 310, 33, C_SURFACE);
+            canvas->fillRect(78, top - 5, 3, 33, C_PALE_PRESETS);
+        }
+        snprintf(text, sizeof(text), "%03d  %s", slot, used ? "SANS NOM" : "LIBRE");
+        drawHubText(text, cx, top, 290, used ? &FreeSansBold12pt7b : &FreeSans12pt7b,
+                    used ? C_WHITE : 0xC618);
+    }
+    snprintf(text, sizeof(text), "%d / %d", count ? selected + 1 : 0, count);
+    drawHubText(s_preset.error ? "ECHEC SD" : s_preset.busy ? "TRANSFERT SD"
+                : !s_preset.sdReady ? "SD ABSENTE" : text,
+                cx, 403, 180, &FreeSans9pt7b, s_preset.error ? C_RED : C_PALE_PRESETS);
+    canvas->flush();
+}
+
 static void drawMenuWheel(const MenuNode* parent, int selectedIndex)
 {
     canvas->fillScreen(C_BLACK);
 
     const int   cx          = LCD_WIDTH / 2;
     const int   cy          = LCD_HEIGHT / 2;
-    const int   outerRadius = min(LCD_WIDTH, LCD_HEIGHT) / 2 - 4;
+    const int   outerRadius = min(LCD_WIDTH, LCD_HEIGHT) / 2 - 10;
     const int   count       = parent->childCount;
     if (count <= 0)
     {
@@ -1206,19 +1441,23 @@ static void drawMenuWheel(const MenuNode* parent, int selectedIndex)
         float startA     = center - step / 2.0f + halfGap;
         float endA       = center + step / 2.0f - halfGap;
         int   outerR     = outerRadius + (selected ? kWheelOuterBulge : 0);
-        uint16_t itemColor = item.color != 0 ? item.color : C_PALE_ACCENT;
+        uint16_t itemColor = item.color != 0 ? item.color : currentMenuAccent();
 
         canvas->fillArc(cx, cy, outerR, kWheelInnerRadius, startA, endA,
-                         selected ? itemColor : C_BLACK);
+                         selected ? C_SURFACE : C_BLACK);
         if (selected)
-            canvas->drawArc(cx, cy, outerR + 2, outerR + 2, startA, endA, C_WHITE);
-        else if (item.color != 0)
+        {
             canvas->fillArc(cx, cy, outerR, outerR - 4, startA, endA, itemColor);
+            canvas->fillArc(cx, cy, kWheelInnerRadius + 2, kWheelInnerRadius,
+                            center - 4, center + 4, itemColor);
+        }
+        else if (item.color != 0)
+            canvas->fillArc(cx, cy, outerR, outerR - 1, startA, endA, C_DKGRAY);
 
         int lx, ly;
         computeAngleRadiusPosition(center, (kWheelInnerRadius + outerRadius) / 2, lx, ly);
 
-        uint16_t textColor = contrastingTextColor(selected ? itemColor : C_BLACK);
+        uint16_t textColor = selected ? C_WHITE : C_MUTED;
         canvas->setTextColor(textColor);
         int16_t  tx1, ty1;
         uint16_t tw, th;
@@ -1245,19 +1484,24 @@ static void drawMenuWheel(const MenuNode* parent, int selectedIndex)
     // LFO1 fields are indices 0..4, LFO2 fields are indices 5..9 inside
     // kLfoSubmenu. Each group gets its own live curve hub.
     bool in_lfo1   = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
-                      && selectedIndex >= 0 && selectedIndex < 5);
+                      && s_menu_selected[1] >= 0 && s_menu_selected[1] < 5);
     bool in_lfo2   = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
-                      && selectedIndex >= 5 && selectedIndex < 10);
+                      && s_menu_selected[1] >= 5 && s_menu_selected[1] < 10);
     bool in_matrix = (s_menu_depth >= 1 && s_menu_stack[1]->children == kMatrixSubmenu);
+    bool in_fx     = (s_menu_depth >= 1 && s_menu_stack[1]->children == kFxSubmenu);
 
     // Inside ENV1/ENV2, the hub shows the focused ADSR parameter's integer
     // value, so the hub label must be the selected child's label
     // (Attack/Decay/... instead of the parent "ENV1"/"ENV2").
     if ((in_env1 || in_env2) && selectedIndex >= 0 && selectedIndex < count)
         hubLabel = parent->children[selectedIndex].label;
-    if (parent == &kRootNode)
+    if (parent == &kRootNode || (s_menu_depth >= 1 && s_menu_stack[1]->children == kPlaySubmenu))
     {
         drawStatusHub(cx, cy, false);
+    }
+    else if (s_menu_depth >= 1 && s_menu_stack[1]->children == kOscSubmenu)
+    {
+        drawOscHub(cx, cy);
     }
     else if (in_env1)
     {
@@ -1283,7 +1527,15 @@ static void drawMenuWheel(const MenuNode* parent, int selectedIndex)
     {
         drawMatrixHub(cx, cy);
     }
-    else
+    else if (in_fx)
+    {
+        drawFxHub(cx, cy);
+    }
+    else if (parent->children == kPresetsSubmenu)
+    {
+        drawPresetHub(cx, cy);
+    }
+    else if (hubLabel != parent->label)
     {
         // Use the biggest font that still fits within the hub, for max visibility.
         const int   hubMaxWidth = (kWheelCenterRadius - 12) * 2;
@@ -1322,14 +1574,18 @@ static void drawCurrentLevel()
 // 270-degree arc gauge with a gap at the bottom, filled proportionally to
 // (value-min)/(max-min), a bright cursor dot at the current position, the
 // parameter label above and the big value + unit centered inside the ring.
-static void drawParamEditRing(const char* label, int32_t value, int32_t minV, int32_t maxV, const char* unit)
+static void drawParamEditRing(const char* label, int32_t value, int32_t minV, int32_t maxV, const char* unit,
+                               const char* valueLabelOverride = nullptr,
+                               const char* minLabelOverride = nullptr,
+                               const char* maxLabelOverride = nullptr)
 {
     canvas->fillScreen(C_BLACK);
 
     const int cx = LCD_WIDTH / 2;
     const int cy = LCD_HEIGHT / 2;
     const int outerR = 208;
-    const int innerR = 178; // ~30px thick arc
+    const int innerR = 200;
+    const uint16_t accent = currentMenuAccent();
     const float startDeg = 135.0f; // bottom-left; gap centered at the bottom (south)
     const float sweepDeg = 270.0f;
 
@@ -1339,7 +1595,7 @@ static void drawParamEditRing(const char* label, int32_t value, int32_t minV, in
     // Dim background track, then the filled portion on top in the accent color
     canvas->fillArc(cx, cy, outerR, innerR, startDeg, startDeg + sweepDeg, C_DKGRAY);
     if (frac > 0.001f)
-        canvas->fillArc(cx, cy, outerR, innerR, startDeg, startDeg + sweepDeg * frac, C_PALE_ACCENT);
+        canvas->fillArc(cx, cy, outerR, innerR, startDeg, startDeg + sweepDeg * frac, accent);
 
     // Bright cursor dot at the current value's position on the arc
     int cursorX, cursorY;
@@ -1355,12 +1611,16 @@ static void drawParamEditRing(const char* label, int32_t value, int32_t minV, in
     int ex, ey;
 
     snprintf(endBuf, sizeof(endBuf), "%ld", (long)minV);
+    if (minLabelOverride != nullptr)
+        snprintf(endBuf, sizeof(endBuf), "%s", minLabelOverride);
     canvas->getTextBounds(endBuf, 0, 0, &etx1, &ety1, &etw, &eth);
     computeAngleRadiusPosition(startDeg, innerR - 24, ex, ey);
     canvas->setCursor(ex - (int)etw / 2 - etx1, ey - (int)eth / 2 - ety1);
     canvas->print(endBuf);
 
     snprintf(endBuf, sizeof(endBuf), "%ld", (long)maxV);
+    if (maxLabelOverride != nullptr)
+        snprintf(endBuf, sizeof(endBuf), "%s", maxLabelOverride);
     canvas->getTextBounds(endBuf, 0, 0, &etx1, &ety1, &etw, &eth);
     computeAngleRadiusPosition(startDeg + sweepDeg, innerR - 24, ex, ey);
     canvas->setCursor(ex - (int)etw / 2 - etx1, ey - (int)eth / 2 - ety1);
@@ -1377,7 +1637,10 @@ static void drawParamEditRing(const char* label, int32_t value, int32_t minV, in
 
     // Big centered value
     char valBuf[16];
-    snprintf(valBuf, sizeof(valBuf), "%ld", (long)value);
+    if (valueLabelOverride != nullptr)
+        snprintf(valBuf, sizeof(valBuf), "%s", valueLabelOverride);
+    else
+        snprintf(valBuf, sizeof(valBuf), "%ld", (long)value);
     canvas->setFont(&FreeSans24pt7b);
     canvas->setTextColor(C_WHITE);
     canvas->getTextBounds(valBuf, 0, 0, &tx1, &ty1, &tw, &th);
@@ -1394,21 +1657,13 @@ static void drawParamEditRing(const char* label, int32_t value, int32_t minV, in
         canvas->print(unit);
     }
 
-    // Bottom hint, in the gap of the arc
-    canvas->setFont(&FreeSans9pt7b);
-    canvas->setTextColor(C_DKGRAY);
-    const char* hint = "PRESS TO VALIDATE";
-    canvas->getTextBounds(hint, 0, 0, &tx1, &ty1, &tw, &th);
-    canvas->setCursor(cx - (int)tw / 2 - tx1, cy + outerR - 18 - ty1);
-    canvas->print(hint);
-
     canvas->flush();
 }
 
 // Polymetric step wheel: one dot per step around the ring (gray=off,
 // yellow=note, green=arpeggio, blue=chord, pink=fixed), the edit cursor
 // (encoder_main) highlighted with a thick red ring, the playhead (running
-// while PLAY) highlighted with a cyan ring. Center hub shows the step count,
+// while PLAY) highlighted as a solid red dot. Center hub shows the step count,
 // the currently-sounding MIDI note and the shared PLAY/STOP transport indicator.
 static void drawPolyWheel()
 {
@@ -1438,9 +1693,10 @@ static void drawPolyWheel()
         bool isPlayhead = (i == s_poly_play);
         int  r = isCursor ? dotRadiusSel : dotRadius;
 
-        canvas->fillCircle(x, y, r, color);
         if (isPlayhead)
-            canvas->drawCircle(x, y, r + (isCursor ? 7 : 4), C_CYAN);
+            canvas->fillCircle(x, y, r, C_RED);
+        else
+            canvas->fillCircle(x, y, r, color);
         if (isCursor)
         {
             canvas->drawCircle(x, y, r + 4, C_RED);
@@ -1546,7 +1802,9 @@ void initUART()
 {
     Serial.println("[UART] Initializing UART for Daisy communication...");
     
-    Serial1.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+    Serial1.setRxBufferSize(4096);
+    Serial1.begin(921600, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+    s_serial_buffer.reserve(256);
     
     Serial.println("[UART] UART configured");
 }
@@ -1585,7 +1843,6 @@ void setup()
     // Initialize display
     initDisplay();
     
-    // Initialize UART (not physically wired yet; menu link uses USB for now)
     initUART();
     
     // Initialize the capacitive touch controller (reserved for future use)
@@ -1599,7 +1856,7 @@ void setup()
 
 void loop()
 {
-    // Read USB serial frames relayed from the Daisy (via usb_bridge.py):
+    // Read display frames directly from the Daisy UART:
     // - "NAV,P=<path>[,V=<n>]" : full navigation state (dot-separated indices
     //   from root) plus an optional preview of the highlighted item's current
     //   value (e.g. ONDE's waveform) when it is itself a live-value list.
@@ -1614,15 +1871,29 @@ void loop()
     bool needsEditRedraw  = false;
     bool needsPolyRedraw  = false;
 
-    while (Serial.available())
+    static bool discardLine = false;
+    while (Serial1.available())
     {
-        char c = Serial.read();
+        char c = Serial1.read();
+        if (c == '\r')
+            continue;
+        if (discardLine)
+        {
+            if (c == '\n')
+                discardLine = false;
+            continue;
+        }
 
         if (c == '\n')
         {
-            if (s_serial_buffer.startsWith("NAV,P="))
+            if (s_serial_buffer.startsWith("SDC,"))
+            {
+                s_sd_server.Receive(s_serial_buffer.c_str());
+            }
+            else if (s_serial_buffer.startsWith("NAV,P="))
             {
                 s_editing = false;
+                s_preset.mode = 0;
                 s_poly_active = false;
                 String rest = s_serial_buffer.substring(6);
                 int vPos = rest.indexOf(",V=");
@@ -1643,6 +1914,22 @@ void loop()
                 s_vcf_resonance_drawn  = s_vcf_resonance;
                 needsWheelRedraw = true;
                 needsEditRedraw  = false;
+                needsPolyRedraw  = false;
+            }
+            else if (s_serial_buffer.startsWith("PRST,"))
+            {
+                bool changed = applyPresetState(s_serial_buffer);
+                if (s_preset.mode != 0)
+                {
+                    needsEditRedraw = needsEditRedraw || changed || !s_editing || s_poly_active;
+                    s_editing = true;
+                    s_poly_active = false;
+                    needsWheelRedraw = false;
+                    needsPolyRedraw = false;
+                }
+                else if (changed && !s_editing && !s_poly_active
+                         && s_menu_stack[s_menu_depth]->children == kPresetsSubmenu)
+                    needsWheelRedraw = true;
             }
             else if (s_serial_buffer.startsWith("STAT,"))
             {
@@ -1678,7 +1965,8 @@ void loop()
                 s_status_valid   = true;
                 bool currentIsEnv1 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kEnv1Submenu);
                 bool needsHubRedraw = (s_menu_stack[s_menu_depth] == &kRootNode && statusChanged)
-                                   || (currentIsEnv1 && statusChanged);
+                                   || (currentIsEnv1 && statusChanged)
+                                   || (s_menu_depth >= 1 && s_menu_stack[1]->children == kPlaySubmenu && statusChanged);
                 if (needsHubRedraw && !s_editing && !s_poly_active)
                 {
                     s_status_bpm_drawn     = s_status_bpm;
@@ -1693,6 +1981,38 @@ void loop()
                     s_env1_release_drawn   = s_env1_release;
                     needsWheelRedraw = true;
                 }
+            }
+            else if (s_serial_buffer.startsWith("OSC,"))
+            {
+                const int32_t wave = parseLongField(s_serial_buffer, "W=");
+                const int32_t amount = parseLongField(s_serial_buffer, "A=");
+                const int32_t ratio = parseLongField(s_serial_buffer, "R=");
+                const int32_t fine = parseLongField(s_serial_buffer, "F=");
+                const int32_t modWave = parseLongField(s_serial_buffer, "M=");
+                const int32_t coarse = parseLongField(s_serial_buffer, "C=");
+                const int32_t oscFine = parseLongField(s_serial_buffer, "I=");
+                const int32_t pulse = parseLongField(s_serial_buffer, "P=");
+                const int32_t sub = parseLongField(s_serial_buffer, "S=");
+                const int32_t hard = parseLongField(s_serial_buffer, "H=");
+                const bool changed = !s_osc_valid || wave != s_osc_wave
+                    || amount != s_osc_fm_amount || ratio != s_osc_fm_ratio
+                    || fine != s_osc_fm_fine || modWave != s_osc_fm_wave
+                    || coarse != s_osc_coarse || oscFine != s_osc_fine
+                    || pulse != s_osc_pulse || sub != s_osc_sub || hard != s_osc_hard;
+                s_osc_wave = wave;
+                s_osc_fm_amount = amount;
+                s_osc_fm_ratio = ratio;
+                s_osc_fm_fine = fine;
+                s_osc_fm_wave = modWave;
+                s_osc_coarse = coarse;
+                s_osc_fine = oscFine;
+                s_osc_pulse = pulse;
+                s_osc_sub = sub;
+                s_osc_hard = hard;
+                s_osc_valid = true;
+                if (changed && !s_editing && !s_poly_active && s_menu_depth >= 1
+                    && s_menu_stack[1]->children == kOscSubmenu)
+                    needsWheelRedraw = true;
             }
             else if (s_serial_buffer.startsWith("EN2,"))
             {
@@ -1726,13 +2046,19 @@ void loop()
                 s_vcf_env       = parseLongField(rest, "VE=");
                 bool vcfHubChanged = s_vcf_type != s_vcf_type_drawn
                                    || s_vcf_cutoff != s_vcf_cutoff_drawn
-                                   || s_vcf_resonance != s_vcf_resonance_drawn;
+                                   || s_vcf_resonance != s_vcf_resonance_drawn
+                                   || s_vcf_key != s_vcf_key_drawn
+                                   || s_vcf_drive != s_vcf_drive_drawn
+                                   || s_vcf_env != s_vcf_env_drawn;
                 bool currentIsVcf = (s_menu_depth >= 1 && s_menu_stack[1]->children == kVcfSubmenu);
                 if (currentIsVcf && vcfHubChanged && !s_editing && !s_poly_active)
                 {
                     s_vcf_type_drawn      = s_vcf_type;
                     s_vcf_cutoff_drawn    = s_vcf_cutoff;
                     s_vcf_resonance_drawn = s_vcf_resonance;
+                    s_vcf_key_drawn       = s_vcf_key;
+                    s_vcf_drive_drawn     = s_vcf_drive;
+                    s_vcf_env_drawn       = s_vcf_env;
                     needsWheelRedraw = true;
                 }
             }
@@ -1750,7 +2076,7 @@ void loop()
                                    || s_lfo1_amp   != s_lfo1_amp_drawn
                                    || s_lfo1_phase != s_lfo1_phase_drawn;
                 bool currentIsLfo1 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
-                                       && s_menu_selected[s_menu_depth] >= 0 && s_menu_selected[s_menu_depth] < 5);
+                                       && s_menu_selected[1] >= 0 && s_menu_selected[1] < 5);
                 if (currentIsLfo1 && lfoHubChanged && !s_editing && !s_poly_active)
                 {
                     s_lfo1_shape_drawn = s_lfo1_shape;
@@ -1775,7 +2101,7 @@ void loop()
                                     || s_lfo2_amp   != s_lfo2_amp_drawn
                                     || s_lfo2_phase != s_lfo2_phase_drawn;
                 bool currentIsLfo2 = (s_menu_depth >= 1 && s_menu_stack[1]->children == kLfoSubmenu
-                                       && s_menu_selected[s_menu_depth] >= 5 && s_menu_selected[s_menu_depth] < 10);
+                                       && s_menu_selected[1] >= 5 && s_menu_selected[1] < 10);
                 if (currentIsLfo2 && lfo2HubChanged && !s_editing && !s_poly_active)
                 {
                     s_lfo2_shape_drawn = s_lfo2_shape;
@@ -1813,8 +2139,30 @@ void loop()
                     needsWheelRedraw = true;
                 }
             }
+            else if (s_serial_buffer.startsWith("FXS,"))
+            {
+                String rest = s_serial_buffer.substring(4);
+                s_fx1_type = parseLongField(rest, "T1=");
+                s_fx2_type = parseLongField(rest, "T2=");
+                s_fx3_type = parseLongField(rest, "T3=");
+                s_fx4_type = parseLongField(rest, "T4=");
+                bool fxHubChanged = s_fx1_type != s_fx1_type_drawn
+                                  || s_fx2_type != s_fx2_type_drawn
+                                  || s_fx3_type != s_fx3_type_drawn
+                                  || s_fx4_type != s_fx4_type_drawn;
+                bool currentIsFx = (s_menu_depth >= 1 && s_menu_stack[1]->children == kFxSubmenu);
+                if (currentIsFx && fxHubChanged && !s_editing && !s_poly_active)
+                {
+                    s_fx1_type_drawn = s_fx1_type;
+                    s_fx2_type_drawn = s_fx2_type;
+                    s_fx3_type_drawn = s_fx3_type;
+                    s_fx4_type_drawn = s_fx4_type;
+                    needsWheelRedraw = true;
+                }
+            }
             else if (s_serial_buffer.startsWith("EDIT,"))
             {
+                s_preset.mode = 0;
                 if (!s_editing)
                 {
                     // Entering edit mode: capture the label of the item highlighted
@@ -1822,6 +2170,14 @@ void loop()
                     const MenuNode* cur = s_menu_stack[s_menu_depth];
                     int sel = s_menu_selected[s_menu_depth];
                     s_edit_label = (sel >= 0 && sel < cur->childCount) ? cur->children[sel].label : "";
+
+                    int32_t fxSlotType = -1;
+                    if (cur->children == kFxFx1Submenu) fxSlotType = s_fx1_type;
+                    else if (cur->children == kFxFx2Submenu) fxSlotType = s_fx2_type;
+                    else if (cur->children == kFxFx3Submenu) fxSlotType = s_fx3_type;
+                    else if (cur->children == kFxFx4Submenu) fxSlotType = s_fx4_type;
+                    s_edit_is_fx_delay_time = (sel == 2) && (fxSlotType == 2); // 2 = FxType::DELAY
+
                     s_editing = true;
                 }
                 String rest  = s_serial_buffer.substring(5);
@@ -1838,6 +2194,8 @@ void loop()
             else if (s_serial_buffer.startsWith("POLY,"))
             {
                 String rest   = s_serial_buffer.substring(5);
+                s_editing = false;
+                s_preset.mode = 0;
                 s_poly_active = true;
                 s_poly_count  = (int)parseLongField(rest, "N=");
                 s_poly_cursor = (int)parseLongField(rest, "C=");
@@ -1850,6 +2208,11 @@ void loop()
                 s_poly_degree = parseLongField(rest, "DEG=");
                 s_poly_play   = (int)parseLongField(rest, "PLAY=");
                 s_poly_note   = (int)parseLongField(rest, "NOTE=");
+                s_poly_gate   = parseLongField(rest, "GATE=");
+                if (s_poly_gate < 0)
+                    s_poly_gate = 0;
+                else if (s_poly_gate > 100)
+                    s_poly_gate = 100;
                 needsPolyRedraw  = true;
                 needsWheelRedraw = false;
                 needsEditRedraw  = false;
@@ -1878,7 +2241,7 @@ void loop()
                         break;
                 }
                 s_audio_valid = true;
-                if (!s_editing && !s_poly_active && s_menu_stack[s_menu_depth] == &kRootNode)
+                if (!s_editing && !s_poly_active && showingPlayHub())
                     needsWheelRedraw = true;
             }
             else if (s_serial_buffer.startsWith("MACT,"))
@@ -1899,15 +2262,20 @@ void loop()
                     s_midi_out_active = true;
                     s_midi_out_decay_ms = millis();
                 }
-                if (!s_editing && !s_poly_active && s_menu_stack[s_menu_depth] == &kRootNode)
+                if (!s_editing && !s_poly_active && showingPlayHub())
                     needsWheelRedraw = true;
             }
 
             s_serial_buffer = "";
         }
-        else if (s_serial_buffer.length() < 256)
+        else if (s_serial_buffer.length() < 254)
         {
             s_serial_buffer += c;
+        }
+        else
+        {
+            s_serial_buffer = "";
+            discardLine = true;
         }
     }
 
@@ -1917,7 +2285,7 @@ void loop()
     uint32_t now = millis();
     if ((s_midi_in_active || s_midi_out_active)
         && (now - s_last_midi_activity_draw_ms >= 40)
-        && !s_editing && !s_poly_active && s_menu_stack[s_menu_depth] == &kRootNode)
+        && !s_editing && !s_poly_active && showingPlayHub())
     {
         s_last_midi_activity_draw_ms = now;
         needsWheelRedraw = true;
@@ -1931,10 +2299,24 @@ void loop()
     {
         bool editing_env1 = (s_menu_depth >= 1 && s_menu_stack[s_menu_depth]->children == kEnv1Submenu);
         bool editing_env2 = (s_menu_depth >= 1 && s_menu_stack[s_menu_depth]->children == kEnv2Submenu);
-        if (editing_env1)
+        if (s_preset.mode != 0)
+            drawPresetList();
+        else if (editing_env1)
             drawEnvelopeEditScreen(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, s_edit_unit.c_str());
         else if (editing_env2)
             drawEnvelope2EditScreen(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, s_edit_unit.c_str());
+        else if (s_edit_is_fx_delay_time)
+        {
+            float t = (s_edit_max > s_edit_min)
+                          ? (float)(s_edit_value - s_edit_min) / (float)(s_edit_max - s_edit_min)
+                          : 0.0f;
+            int divIndex = (int)(t * (kPLAY_play_poly_divOptionCount - 1) + 0.5f);
+            divIndex = constrain(divIndex, 0, kPLAY_play_poly_divOptionCount - 1);
+            drawParamEditRing(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, "",
+                               kPLAY_play_poly_divOptions[divIndex].label,
+                               kPLAY_play_poly_divOptions[0].label,
+                               kPLAY_play_poly_divOptions[kPLAY_play_poly_divOptionCount - 1].label);
+        }
         else
             drawParamEditRing(s_edit_label.c_str(), s_edit_value, s_edit_min, s_edit_max, s_edit_unit.c_str());
     }

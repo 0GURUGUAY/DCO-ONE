@@ -4,7 +4,7 @@
 namespace dco {
 
 MidiOut::MidiOut()
-    : hw_(nullptr),
+    : midi_(nullptr),
       channel_(kDefaultChannel)
 {
 }
@@ -13,9 +13,9 @@ MidiOut::~MidiOut()
 {
 }
 
-void MidiOut::Init(daisy::DaisySeed& hw, uint8_t channel)
+void MidiOut::Init(daisy::MidiUsbHandler& midi, uint8_t channel)
 {
-    hw_ = &hw;
+    midi_ = &midi;
     SetChannel(channel);
 }
 
@@ -26,24 +26,12 @@ void MidiOut::SetChannel(uint8_t channel)
 
 void MidiOut::SendMessage(uint8_t status, uint8_t data0, uint8_t data1)
 {
-    if (hw_ == nullptr)
+    if (midi_ == nullptr)
         return;
 
-    const bool has_data0 = (data0 != 0xFF);
-    const bool has_data1 = (data1 != 0xFF);
-
-    if (has_data0 && has_data1)
-    {
-        hw_->PrintLine("MIDI,%02X,%02X,%02X", status, data0, data1);
-    }
-    else if (has_data0)
-    {
-        hw_->PrintLine("MIDI,%02X,%02X", status, data0);
-    }
-    else
-    {
-        hw_->PrintLine("MIDI,%02X", status);
-    }
+    uint8_t bytes[3] = {status, data0, data1};
+    const size_t size = data0 == 0xFF ? 1 : (data1 == 0xFF ? 2 : 3);
+    midi_->SendMessage(bytes, size);
 }
 
 void MidiOut::SendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel)

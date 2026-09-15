@@ -31,8 +31,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # The custom Daisy toolchain blanks out CMake's default per-config optimization
 # flags, so they must be set explicitly. The 128K internal flash region is
-# tight, so optimize for size.
-add_compile_options(-Os -ffunction-sections -fdata-sections)
+# tight, so optimize for size and enable link-time optimization.
+add_compile_options(-Os -ffunction-sections -fdata-sections -flto)
+add_link_options(-flto)
 
 # Add libDaisy as a subdirectory
 add_subdirectory(${DAISY_ROOT} libDaisy EXCLUDE_FROM_ALL)
@@ -53,6 +54,7 @@ set(SOURCES
     src/filter.cpp
     src/lfo.cpp
     src/fm.cpp
+    src/fx_chain.cpp
     src/input_manager.cpp
     src/midi.cpp
     src/patch_storage.cpp

@@ -300,21 +300,95 @@ static const int kMatrixSubmenuCount = sizeof(kMatrixSubmenu) / sizeof(kMatrixSu
 
 // ---- FX: Effects ----
 
-static const MenuNode kFX_fx_typeOptions[] = {
+static const MenuNode kFX_fx1_typeOptions[] = {
     { "Off", 0, nullptr, 0 },
     { "Reverb", 0, nullptr, 0 },
     { "Delay", 0, nullptr, 0 },
     { "Chorus", 0, nullptr, 0 },
+    { "Flanger", 0, nullptr, 0 },
+    { "Phaser", 0, nullptr, 0 },
     { "BitCrusher", 0, nullptr, 0 },
 };
-static const int kFX_fx_typeOptionCount = sizeof(kFX_fx_typeOptions) / sizeof(kFX_fx_typeOptions[0]);
+static const int kFX_fx1_typeOptionCount = sizeof(kFX_fx1_typeOptions) / sizeof(kFX_fx1_typeOptions[0]);
 
 
-static const MenuNode kFxSubmenu[] = {
-    { "Effect Type", 0, kFX_fx_typeOptions, kFX_fx_typeOptionCount },
+static const MenuNode kFxFx1Submenu[] = {
+    { "Type", 0, kFX_fx1_typeOptions, kFX_fx1_typeOptionCount },
     { "Dry/Wet", 0, nullptr, 0 },
     { "Time/Decay", 0, nullptr, 0 },
     { "FB/Tone", 0, nullptr, 0 },
+};
+static const int kFxFx1SubmenuCount = sizeof(kFxFx1Submenu) / sizeof(kFxFx1Submenu[0]);
+
+
+static const MenuNode kFX_fx2_typeOptions[] = {
+    { "Off", 0, nullptr, 0 },
+    { "Reverb", 0, nullptr, 0 },
+    { "Delay", 0, nullptr, 0 },
+    { "Chorus", 0, nullptr, 0 },
+    { "Flanger", 0, nullptr, 0 },
+    { "Phaser", 0, nullptr, 0 },
+    { "BitCrusher", 0, nullptr, 0 },
+};
+static const int kFX_fx2_typeOptionCount = sizeof(kFX_fx2_typeOptions) / sizeof(kFX_fx2_typeOptions[0]);
+
+
+static const MenuNode kFxFx2Submenu[] = {
+    { "Type", 0, kFX_fx2_typeOptions, kFX_fx2_typeOptionCount },
+    { "Dry/Wet", 0, nullptr, 0 },
+    { "Time/Decay", 0, nullptr, 0 },
+    { "FB/Tone", 0, nullptr, 0 },
+};
+static const int kFxFx2SubmenuCount = sizeof(kFxFx2Submenu) / sizeof(kFxFx2Submenu[0]);
+
+
+static const MenuNode kFX_fx3_typeOptions[] = {
+    { "Off", 0, nullptr, 0 },
+    { "Reverb", 0, nullptr, 0 },
+    { "Delay", 0, nullptr, 0 },
+    { "Chorus", 0, nullptr, 0 },
+    { "Flanger", 0, nullptr, 0 },
+    { "Phaser", 0, nullptr, 0 },
+    { "BitCrusher", 0, nullptr, 0 },
+};
+static const int kFX_fx3_typeOptionCount = sizeof(kFX_fx3_typeOptions) / sizeof(kFX_fx3_typeOptions[0]);
+
+
+static const MenuNode kFxFx3Submenu[] = {
+    { "Type", 0, kFX_fx3_typeOptions, kFX_fx3_typeOptionCount },
+    { "Dry/Wet", 0, nullptr, 0 },
+    { "Time/Decay", 0, nullptr, 0 },
+    { "FB/Tone", 0, nullptr, 0 },
+};
+static const int kFxFx3SubmenuCount = sizeof(kFxFx3Submenu) / sizeof(kFxFx3Submenu[0]);
+
+
+static const MenuNode kFX_fx4_typeOptions[] = {
+    { "Off", 0, nullptr, 0 },
+    { "Reverb", 0, nullptr, 0 },
+    { "Delay", 0, nullptr, 0 },
+    { "Chorus", 0, nullptr, 0 },
+    { "Flanger", 0, nullptr, 0 },
+    { "Phaser", 0, nullptr, 0 },
+    { "BitCrusher", 0, nullptr, 0 },
+};
+static const int kFX_fx4_typeOptionCount = sizeof(kFX_fx4_typeOptions) / sizeof(kFX_fx4_typeOptions[0]);
+
+
+static const MenuNode kFxFx4Submenu[] = {
+    { "Type", 0, kFX_fx4_typeOptions, kFX_fx4_typeOptionCount },
+    { "Dry/Wet", 0, nullptr, 0 },
+    { "Time/Decay", 0, nullptr, 0 },
+    { "FB/Tone", 0, nullptr, 0 },
+};
+static const int kFxFx4SubmenuCount = sizeof(kFxFx4Submenu) / sizeof(kFxFx4Submenu[0]);
+
+
+static const MenuNode kFxSubmenu[] = {
+    { "FX1", 0, kFxFx1Submenu, kFxFx1SubmenuCount },
+    { "FX2", 0, kFxFx2Submenu, kFxFx2SubmenuCount },
+    { "FX3", 0, kFxFx3Submenu, kFxFx3SubmenuCount },
+    { "FX4", 0, kFxFx4Submenu, kFxFx4SubmenuCount },
 };
 static const int kFxSubmenuCount = sizeof(kFxSubmenu) / sizeof(kFxSubmenu[0]);
 

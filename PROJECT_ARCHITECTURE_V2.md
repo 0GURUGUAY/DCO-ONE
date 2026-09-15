@@ -573,3 +573,7 @@ The display must never compromise the stability of the audio engine.
 This principle takes priority over implementation convenience.
 
 
+comment utiliser les différentes options (SD, microphones) de l'ESP32 avec l'application
+
+glide sur les steps
+

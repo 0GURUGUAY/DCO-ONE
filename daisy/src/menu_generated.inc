@@ -164,9 +164,9 @@ static constexpr uint8_t kVcfSubmenuCount = sizeof(kVcfSubmenu) / sizeof(kVcfSub
 // ---- ENV1: Env Amp ----
 static NumericParam kEnv1AttackParam = { 1, 5000, 10, 50, "ms" };
 static NumericParam kEnv1DecayParam = { 1, 5000, 10, 200, "ms" };
-static NumericParam kEnv1SustainParam = { 0, 100, 1, 80, "%" };
-static NumericParam kEnv1ReleaseParam = { 1, 5000, 10, 300, "ms" };
-static NumericParam kEnv1VelocityParam = { 0, 100, 1, 80, "%" };
+static NumericParam kEnv1SustainParam = { 0, 100, 10, 80, "%" };
+static NumericParam kEnv1ReleaseParam = { 1, 5000, 100, 300, "ms" };
+static NumericParam kEnv1VelocityParam = { 0, 100, 5, 80, "%" };
 
 static MenuNode kEnv1Submenu[] = {
     { "Attack", COLOR_DEFAULT, nullptr, 0, ApplyEnv1Attack, 0, &kEnv1AttackParam, nullptr },
@@ -189,8 +189,8 @@ static constexpr uint8_t kENV2_env2_loopOptionCount = sizeof(kENV2_env2_loopOpti
 
 static NumericParam kEnv2AttackParam = { 1, 5000, 10, 50, "ms" };
 static NumericParam kEnv2DecayParam = { 1, 5000, 10, 200, "ms" };
-static NumericParam kEnv2SustainParam = { 0, 100, 1, 50, "%" };
-static NumericParam kEnv2ReleaseParam = { 1, 5000, 10, 300, "ms" };
+static NumericParam kEnv2SustainParam = { 0, 100, 10, 50, "%" };
+static NumericParam kEnv2ReleaseParam = { 1, 5000, 100, 300, "ms" };
 
 static MenuNode kEnv2Submenu[] = {
     { "Attack", COLOR_DEFAULT, nullptr, 0, ApplyEnv2Attack, 0, &kEnv2AttackParam, nullptr },
@@ -249,7 +249,7 @@ static MenuNode kLFO_lfo2_syncOptions[] = {
 };
 static constexpr uint8_t kLFO_lfo2_syncOptionCount = sizeof(kLFO_lfo2_syncOptions) / sizeof(kLFO_lfo2_syncOptions[0]);
 
-static NumericParam kLfo1RateParam = { 1, 500, 1, 10, "Hz" };
+static NumericParam kLfo1RateParam = { 1, 1000, 5, 10, "Hz" };
 static NumericParam kLfo1AmpParam = { 0, 100, 1, 50, "%" };
 static NumericParam kLfo1PhaseParam = { 0, 360, 5, 0, "°" };
 static NumericParam kLfo2RateParam = { 1, 500, 1, 8, "Hz" };
@@ -334,24 +334,107 @@ static constexpr uint8_t kMatrixSubmenuCount = sizeof(kMatrixSubmenu) / sizeof(k
 
 // ---- FX: Effects ----
 
-static MenuNode kFX_fx_typeOptions[] = {
+static MenuNode kFX_fx1_typeOptions[] = {
     { "Off", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "Reverb", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "Delay", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "Chorus", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Flanger", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Phaser", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "BitCrusher", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
-static constexpr uint8_t kFX_fx_typeOptionCount = sizeof(kFX_fx_typeOptions) / sizeof(kFX_fx_typeOptions[0]);
+static constexpr uint8_t kFX_fx1_typeOptionCount = sizeof(kFX_fx1_typeOptions) / sizeof(kFX_fx1_typeOptions[0]);
 
-static NumericParam kFxDryWetParam = { 0, 100, 1, 50, "%" };
-static NumericParam kFxTimeParam = { 10, 5000, 50, 500, "ms" };
-static NumericParam kFxFbParam = { 0, 100, 1, 50, "%" };
+static NumericParam kFx1MixParam = { 0, 100, 1, 50, "%" };
+static NumericParam kFx1P1Param = { 10, 500, 10, 250, "ms" };
+static NumericParam kFx1P2Param = { 0, 100, 1, 30, "%" };
+
+static MenuNode kFxFx1Submenu[] = {
+    { "Type", COLOR_DEFAULT, kFX_fx1_typeOptions, kFX_fx1_typeOptionCount, ApplyFx1Type, 0, nullptr, nullptr },
+    { "Dry/Wet", COLOR_DEFAULT, nullptr, 0, ApplyFx1Mix, 0, &kFx1MixParam, nullptr },
+    { "Time/Decay", COLOR_DEFAULT, nullptr, 0, ApplyFx1P1, 0, &kFx1P1Param, nullptr },
+    { "FB/Tone", COLOR_DEFAULT, nullptr, 0, ApplyFx1P2, 0, &kFx1P2Param, nullptr },
+};
+static constexpr uint8_t kFxFx1SubmenuCount = sizeof(kFxFx1Submenu) / sizeof(kFxFx1Submenu[0]);
+
+
+static MenuNode kFX_fx2_typeOptions[] = {
+    { "Off", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Reverb", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Delay", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Chorus", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Flanger", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Phaser", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "BitCrusher", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+};
+static constexpr uint8_t kFX_fx2_typeOptionCount = sizeof(kFX_fx2_typeOptions) / sizeof(kFX_fx2_typeOptions[0]);
+
+static NumericParam kFx2MixParam = { 0, 100, 1, 50, "%" };
+static NumericParam kFx2P1Param = { 10, 500, 10, 250, "ms" };
+static NumericParam kFx2P2Param = { 0, 100, 1, 30, "%" };
+
+static MenuNode kFxFx2Submenu[] = {
+    { "Type", COLOR_DEFAULT, kFX_fx2_typeOptions, kFX_fx2_typeOptionCount, ApplyFx2Type, 0, nullptr, nullptr },
+    { "Dry/Wet", COLOR_DEFAULT, nullptr, 0, ApplyFx2Mix, 0, &kFx2MixParam, nullptr },
+    { "Time/Decay", COLOR_DEFAULT, nullptr, 0, ApplyFx2P1, 0, &kFx2P1Param, nullptr },
+    { "FB/Tone", COLOR_DEFAULT, nullptr, 0, ApplyFx2P2, 0, &kFx2P2Param, nullptr },
+};
+static constexpr uint8_t kFxFx2SubmenuCount = sizeof(kFxFx2Submenu) / sizeof(kFxFx2Submenu[0]);
+
+
+static MenuNode kFX_fx3_typeOptions[] = {
+    { "Off", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Reverb", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Delay", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Chorus", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Flanger", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Phaser", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "BitCrusher", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+};
+static constexpr uint8_t kFX_fx3_typeOptionCount = sizeof(kFX_fx3_typeOptions) / sizeof(kFX_fx3_typeOptions[0]);
+
+static NumericParam kFx3MixParam = { 0, 100, 1, 50, "%" };
+static NumericParam kFx3P1Param = { 10, 500, 10, 250, "ms" };
+static NumericParam kFx3P2Param = { 0, 100, 1, 30, "%" };
+
+static MenuNode kFxFx3Submenu[] = {
+    { "Type", COLOR_DEFAULT, kFX_fx3_typeOptions, kFX_fx3_typeOptionCount, ApplyFx3Type, 0, nullptr, nullptr },
+    { "Dry/Wet", COLOR_DEFAULT, nullptr, 0, ApplyFx3Mix, 0, &kFx3MixParam, nullptr },
+    { "Time/Decay", COLOR_DEFAULT, nullptr, 0, ApplyFx3P1, 0, &kFx3P1Param, nullptr },
+    { "FB/Tone", COLOR_DEFAULT, nullptr, 0, ApplyFx3P2, 0, &kFx3P2Param, nullptr },
+};
+static constexpr uint8_t kFxFx3SubmenuCount = sizeof(kFxFx3Submenu) / sizeof(kFxFx3Submenu[0]);
+
+
+static MenuNode kFX_fx4_typeOptions[] = {
+    { "Off", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Reverb", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Delay", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Chorus", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Flanger", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Phaser", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "BitCrusher", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+};
+static constexpr uint8_t kFX_fx4_typeOptionCount = sizeof(kFX_fx4_typeOptions) / sizeof(kFX_fx4_typeOptions[0]);
+
+static NumericParam kFx4MixParam = { 0, 100, 1, 50, "%" };
+static NumericParam kFx4P1Param = { 10, 500, 10, 250, "ms" };
+static NumericParam kFx4P2Param = { 0, 100, 1, 30, "%" };
+
+static MenuNode kFxFx4Submenu[] = {
+    { "Type", COLOR_DEFAULT, kFX_fx4_typeOptions, kFX_fx4_typeOptionCount, ApplyFx4Type, 0, nullptr, nullptr },
+    { "Dry/Wet", COLOR_DEFAULT, nullptr, 0, ApplyFx4Mix, 0, &kFx4MixParam, nullptr },
+    { "Time/Decay", COLOR_DEFAULT, nullptr, 0, ApplyFx4P1, 0, &kFx4P1Param, nullptr },
+    { "FB/Tone", COLOR_DEFAULT, nullptr, 0, ApplyFx4P2, 0, &kFx4P2Param, nullptr },
+};
+static constexpr uint8_t kFxFx4SubmenuCount = sizeof(kFxFx4Submenu) / sizeof(kFxFx4Submenu[0]);
+
 
 static MenuNode kFxSubmenu[] = {
-    { "Effect Type", COLOR_DEFAULT, kFX_fx_typeOptions, kFX_fx_typeOptionCount, nullptr, 1, nullptr, nullptr },
-    { "Dry/Wet", COLOR_DEFAULT, nullptr, 0, ApplyFxDryWet, 0, &kFxDryWetParam, nullptr },
-    { "Time/Decay", COLOR_DEFAULT, nullptr, 0, ApplyFxTime, 0, &kFxTimeParam, nullptr },
-    { "FB/Tone", COLOR_DEFAULT, nullptr, 0, ApplyFxFb, 0, &kFxFbParam, nullptr },
+    { "FX1", COLOR_DEFAULT, kFxFx1Submenu, kFxFx1SubmenuCount, nullptr, 0, nullptr, nullptr },
+    { "FX2", COLOR_DEFAULT, kFxFx2Submenu, kFxFx2SubmenuCount, nullptr, 0, nullptr, nullptr },
+    { "FX3", COLOR_DEFAULT, kFxFx3Submenu, kFxFx3SubmenuCount, nullptr, 0, nullptr, nullptr },
+    { "FX4", COLOR_DEFAULT, kFxFx4Submenu, kFxFx4SubmenuCount, nullptr, 0, nullptr, nullptr },
 };
 static constexpr uint8_t kFxSubmenuCount = sizeof(kFxSubmenu) / sizeof(kFxSubmenu[0]);
 
@@ -415,7 +498,7 @@ static MenuNode kSYSTEM_sys_rateOptions[] = {
 static constexpr uint8_t kSYSTEM_sys_rateOptionCount = sizeof(kSYSTEM_sys_rateOptions) / sizeof(kSYSTEM_sys_rateOptions[0]);
 
 static NumericParam kSysLuminositeParam = { 10, 100, 1, 80, "%" };
-static NumericParam kSysVolumeParam = { 0, 100, 1, 100, "%" };
+static NumericParam kSysVolumeParam = { 0, 100, 5, 100, "%" };
 
 static MenuNode kSystemSubmenu[] = {
     { "Luminosite", COLOR_DEFAULT, nullptr, 0, ApplySysLuminosite, 0, &kSysLuminositeParam, nullptr },

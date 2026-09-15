@@ -181,9 +181,9 @@
       "submenus": [
         { "id": "env1_attack", "label": "Attack", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 50, "unit": "ms" },
         { "id": "env1_decay", "label": "Decay", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 200, "unit": "ms" },
-        { "id": "env1_sustain", "label": "Sustain", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 80, "unit": "%" },
-        { "id": "env1_release", "label": "Release", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 300, "unit": "ms" },
-        { "id": "env1_vel_sens", "label": "Velocity", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 80, "unit": "%" }
+        { "id": "env1_sustain", "label": "Sustain", "type": "INT", "min": 0, "max": 100, "step": 10, "default": 80, "unit": "%" },
+        { "id": "env1_release", "label": "Release", "type": "INT", "min": 1, "max": 5000, "step": 100, "default": 300, "unit": "ms" },
+        { "id": "env1_vel_sens", "label": "Velocity", "type": "INT", "min": 0, "max": 100, "step": 5, "default": 80, "unit": "%" }
       ]
     },
     {
@@ -195,8 +195,8 @@
       "submenus": [
         { "id": "env2_attack", "label": "Attack", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 50, "unit": "ms" },
         { "id": "env2_decay", "label": "Decay", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 200, "unit": "ms" },
-        { "id": "env2_sustain", "label": "Sustain", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
-        { "id": "env2_release", "label": "Release", "type": "INT", "min": 1, "max": 5000, "step": 10, "default": 300, "unit": "ms" },
+        { "id": "env2_sustain", "label": "Sustain", "type": "INT", "min": 0, "max": 100, "step": 10, "default": 50, "unit": "%" },
+        { "id": "env2_release", "label": "Release", "type": "INT", "min": 1, "max": 5000, "step": 100, "default": 300, "unit": "ms" },
         { "id": "env2_loop", "label": "Loop", "type": "ENUM", "options": ["OFF", "FREE", "SYNC"], "default": 0 }
       ]
     },
@@ -208,7 +208,7 @@
       "color": "#FF007F",
       "submenus": [
         { "id": "lfo1_shape", "label": "1 Shape", "type": "ENUM", "options": ["Sin", "Tri", "Saw", "Sq", "S&H", "Rnd"], "default": 0 },
-        { "id": "lfo1_rate", "label": "1 Rate", "type": "INT", "min": 1, "max": 500, "step": 1, "default": 10, "unit": "Hz" },
+        { "id": "lfo1_rate", "label": "1 Rate", "type": "INT", "min": 1, "max": 1000, "step": 5, "default": 10, "unit": "Hz" },
         { "id": "lfo1_sync", "label": "1 Sync", "type": "ENUM", "options": ["FREE", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32"], "default": 0 },
         { "id": "lfo1_amp", "label": "1 Amp", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
         { "id": "lfo1_phase", "label": "1 Phase", "type": "INT", "min": 0, "max": 360, "step": 5, "default": 0, "unit": "°" },
@@ -241,10 +241,50 @@
       "icon": "icon_fx",
       "color": "#00FF66",
       "submenus": [
-        { "id": "fx_type", "label": "Effect Type", "type": "ENUM", "options": ["Off", "Reverb", "Delay", "Chorus", "BitCrusher"], "default": 1 },
-        { "id": "fx_mix", "label": "Dry/Wet", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
-        { "id": "fx_p1", "label": "Time/Decay", "type": "INT", "min": 10, "max": 5000, "step": 50, "default": 500, "unit": "ms" },
-        { "id": "fx_p2", "label": "FB/Tone", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" }
+        {
+          "id": "fx1",
+          "label": "FX1",
+          "type": "SUBMENU",
+          "submenus": [
+            { "id": "fx1_type", "label": "Type", "type": "ENUM", "options": ["Off", "Reverb", "Delay", "Chorus", "Flanger", "Phaser", "BitCrusher"], "default": 0 },
+            { "id": "fx1_mix", "label": "Dry/Wet", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "fx1_p1", "label": "Time/Decay", "type": "INT", "min": 10, "max": 500, "step": 10, "default": 250, "unit": "ms" },
+            { "id": "fx1_p2", "label": "FB/Tone", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" }
+          ]
+        },
+        {
+          "id": "fx2",
+          "label": "FX2",
+          "type": "SUBMENU",
+          "submenus": [
+            { "id": "fx2_type", "label": "Type", "type": "ENUM", "options": ["Off", "Reverb", "Delay", "Chorus", "Flanger", "Phaser", "BitCrusher"], "default": 0 },
+            { "id": "fx2_mix", "label": "Dry/Wet", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "fx2_p1", "label": "Time/Decay", "type": "INT", "min": 10, "max": 500, "step": 10, "default": 250, "unit": "ms" },
+            { "id": "fx2_p2", "label": "FB/Tone", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" }
+          ]
+        },
+        {
+          "id": "fx3",
+          "label": "FX3",
+          "type": "SUBMENU",
+          "submenus": [
+            { "id": "fx3_type", "label": "Type", "type": "ENUM", "options": ["Off", "Reverb", "Delay", "Chorus", "Flanger", "Phaser", "BitCrusher"], "default": 0 },
+            { "id": "fx3_mix", "label": "Dry/Wet", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "fx3_p1", "label": "Time/Decay", "type": "INT", "min": 10, "max": 500, "step": 10, "default": 250, "unit": "ms" },
+            { "id": "fx3_p2", "label": "FB/Tone", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" }
+          ]
+        },
+        {
+          "id": "fx4",
+          "label": "FX4",
+          "type": "SUBMENU",
+          "submenus": [
+            { "id": "fx4_type", "label": "Type", "type": "ENUM", "options": ["Off", "Reverb", "Delay", "Chorus", "Flanger", "Phaser", "BitCrusher"], "default": 0 },
+            { "id": "fx4_mix", "label": "Dry/Wet", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "fx4_p1", "label": "Time/Decay", "type": "INT", "min": 10, "max": 500, "step": 10, "default": 250, "unit": "ms" },
+            { "id": "fx4_p2", "label": "FB/Tone", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" }
+          ]
+        }
       ]
     },
     {
@@ -282,7 +322,7 @@
         { "id": "sys_sleep", "label": "Mise en veille", "type": "ENUM", "options": ["OFF", "1 MIN", "5 MIN", "15 MIN"], "default": 1 },
         { "id": "sys_sens", "label": "Sensibilite", "type": "ENUM", "options": ["FAIBLE", "MOYENNE", "ELEVEE"], "default": 1 },
         { "id": "sys_rate", "label": "Sample Rate", "type": "ENUM", "options": ["48 kHz", "96 kHz"], "default": 0 },
-        { "id": "sys_volume", "label": "Volume", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 100, "unit": "%" },
+        { "id": "sys_volume", "label": "Volume", "type": "INT", "min": 0, "max": 100, "step": 5, "default": 100, "unit": "%" },
         { "id": "sys_440hz", "label": "440Hz", "type": "ACTION", "action_id": "CMD_440HZ" },
         { "id": "sys_diag", "label": "Test Hardware", "type": "ACTION", "action_id": "CMD_TEST_HW" }
       ]

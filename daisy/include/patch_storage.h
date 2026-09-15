@@ -1,30 +1,9 @@
 #pragma once
 
-#include <cstdint>
+#include "../../shared/pattern_format.h"
 #include "daisy_seed.h"
 
 namespace dco {
-
-// Maximum sizes, kept in sync with daisy/src/main.cpp.
-constexpr int kPatchMaxValues     = 48;
-constexpr int kPatchMaxSelections = 48;
-constexpr int kPatchMaxPolySteps  = 32;
-constexpr int kPatchSlotCount     = 128;
-
-struct PatchPolyStep {
-    uint8_t state;
-    int8_t  degree;
-    int8_t  fixedTranspose;
-};
-
-struct PatchData {
-    int32_t      values[kPatchMaxValues]         = {};
-    uint32_t     numValues                       = 0;
-    int32_t      selections[kPatchMaxSelections] = {};
-    uint32_t     numSelections                   = 0;
-    PatchPolyStep polySteps[kPatchMaxPolySteps]  = {};
-    uint32_t     numPolySteps                    = 0;
-};
 
 // Initialize the patch storage layer (must be called after hw.Init()).
 bool PatchStorageInit(daisy::QSPIHandle& qspi);

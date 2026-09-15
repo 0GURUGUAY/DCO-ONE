@@ -15,7 +15,7 @@ namespace dco {
 static constexpr uint32_t kPatchStorageBase   = 0x10000; // 64 KiB offset
 static constexpr uint32_t kPatchSectorSize    = 4096;
 static constexpr uint32_t kPatchHeaderMagic   = 0x44434F31; // "DCO1"
-static constexpr uint32_t kPatchFormatVersion = 1;
+static constexpr uint32_t kPatchFormatVersion = 2;            // 4-slot FX chain
 
 static daisy::QSPIHandle* s_qspi = nullptr;
 

@@ -134,6 +134,9 @@ def main():
                         or text.startswith("EDIT,") or text.startswith("STAT,")
                         or text.startswith("EN2,") or text.startswith("VCF,")
                         or text.startswith("LFO,") or text.startswith("LF2,")
+                        or text.startswith("FXS,")
+                        or text.startswith("OSC,")
+                        or text.startswith("PRST,")
                         or text.startswith("WAVE,") or text.startswith("POLY,")
                     )
                     if is_control_msg:

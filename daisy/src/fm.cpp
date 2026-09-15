@@ -1,9 +1,18 @@
 #include "fm.h"
+#include <cmath>
 
 namespace dco {
 
 FmWrapper::FmWrapper()
-    : sampleRate_(48000.0f), frequency_(440.0f), ratio_(2.0f), index_(1.0f), amplitude_(0.3f)
+    : sampleRate_(48000.0f),
+      baseFrequency_(440.0f),
+      frequency_(440.0f),
+      ratio_(2.0f),
+      index_(1.0f),
+      amplitude_(0.3f),
+      coarseSemitones_(0),
+      fineCents_(0),
+      pitchModSemitones_(0.0f)
 {
 }
 
@@ -13,8 +22,8 @@ FmWrapper::~FmWrapper()
 
 void FmWrapper::Init(float sampleRate, float frequency)
 {
-    sampleRate_ = sampleRate;
-    frequency_  = frequency;
+    sampleRate_    = sampleRate;
+    baseFrequency_ = frequency;
 
     car_.Init(sampleRate);
     mod_.Init(sampleRate);
@@ -22,8 +31,8 @@ void FmWrapper::Init(float sampleRate, float frequency)
     mod_.SetWaveform(daisysp::Oscillator::WAVE_SIN);
     car_.SetAmp(1.0f);
     mod_.SetAmp(1.0f);
-    car_.SetFreq(frequency_);
-    mod_.SetFreq(frequency_ * ratio_);
+
+    UpdateFrequency();
 }
 
 float FmWrapper::GetSample()
@@ -35,9 +44,8 @@ float FmWrapper::GetSample()
 
 void FmWrapper::SetFrequency(float frequency)
 {
-    frequency_ = frequency;
-    car_.SetFreq(frequency_);
-    mod_.SetFreq(frequency_ * ratio_);
+    baseFrequency_ = frequency;
+    UpdateFrequency();
 }
 
 void FmWrapper::SetRatio(float ratio)
@@ -59,6 +67,35 @@ void FmWrapper::SetModWaveform(uint8_t waveform)
 void FmWrapper::SetAmplitude(float amp)
 {
     amplitude_ = amp;
+}
+
+void FmWrapper::SetCoarseTune(int32_t semitones)
+{
+    coarseSemitones_ = semitones;
+    UpdateFrequency();
+}
+
+void FmWrapper::SetFineTune(int32_t cents)
+{
+    fineCents_ = cents;
+    UpdateFrequency();
+}
+
+void FmWrapper::SetPitchModulation(float semitones)
+{
+    pitchModSemitones_ = semitones;
+    UpdateFrequency();
+}
+
+void FmWrapper::UpdateFrequency()
+{
+    const float semitones = static_cast<float>(coarseSemitones_)
+                          + static_cast<float>(fineCents_) / 100.0f
+                          + pitchModSemitones_;
+    frequency_ = baseFrequency_ * std::pow(2.0f, semitones / 12.0f);
+
+    car_.SetFreq(frequency_);
+    mod_.SetFreq(frequency_ * ratio_);
 }
 
 } // namespace dco

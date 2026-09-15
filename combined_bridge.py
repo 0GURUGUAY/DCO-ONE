@@ -16,6 +16,10 @@ Usage:
 
 Without arguments the script scans connected serial ports and auto-selects the
 Daisy and ESP32 ports. Positional arguments override auto-detection.
+MIDI input must use a different bus from MIDI output to avoid replaying the
+sequencer's own notes. If no separate input exists, MIDI input is disabled.
+Pass '-' as midi_in_port to disable MIDI input explicitly. In a DAW, do not
+route the sequencer output back to the selected input bus.
 """
 
 import re
@@ -143,7 +147,7 @@ def open_midi_output(requested_name=None):
         matches = [i for i, n in enumerate(available) if "IAC" in n]
         port_index = matches[0] if matches else None
 
-    if port_index is None:
+    if port_index is None or not 0 <= port_index < len(available):
         print("Available MIDI output ports:")
         for i, name in enumerate(available):
             print(f"  [{i}] {name}")
@@ -152,10 +156,14 @@ def open_midi_output(requested_name=None):
     port_name = available[port_index]
     midi_out.open_port(port_index)
     print(f"MIDI output opened: [{port_index}] {port_name}")
-    return midi_out
+    return midi_out, port_name
 
 
-def open_midi_input(requested_name=None):
+def open_midi_input(requested_name=None, output_port_name=None):
+    if requested_name == "-":
+        print("MIDI input disabled.")
+        return None
+
     midi_in = rtmidi.MidiIn()
     available = midi_in.get_ports()
 
@@ -175,15 +183,26 @@ def open_midi_input(requested_name=None):
             else:
                 port_index = matches[0]
     else:
-        port_index = 0
+        port_index = next(
+            (index for index, name in enumerate(available) if name != output_port_name),
+            None,
+        )
+        if port_index is None:
+            print("MIDI input disabled: only the MIDI output bus is available (loopback prevented).")
+            return None
 
-    if port_index is None or port_index >= len(available):
+    if port_index is None or not 0 <= port_index < len(available):
         print("Available MIDI input ports:")
         for i, name in enumerate(available):
             print(f"  [{i}] {name}")
         return None
 
     port_name = available[port_index]
+    if port_name == output_port_name:
+        print(f"MIDI input disabled: '{port_name}' is also the output bus (loopback prevented).")
+        print("Select a separate MIDI input bus or pass '-' to disable MIDI input.")
+        return None
+
     midi_in.open_port(port_index)
     print(f"MIDI input opened: [{port_index}] {port_name}")
     return midi_in
@@ -209,8 +228,8 @@ def main():
         print("  Pass '-' as the ESP32 port to disable ESP32 forwarding (Daisy + MIDI only).")
         sys.exit(1)
 
-    midi_out = open_midi_output(midi_out_name)
-    midi_in = open_midi_input(midi_in_name)
+    midi_out, opened_output_name = open_midi_output(midi_out_name)
+    midi_in = open_midi_input(midi_in_name, output_port_name=opened_output_name)
 
     print(f"\nOpening Daisy port: {daisy_path}")
     if esp_path and esp_path != "-":
@@ -303,8 +322,11 @@ def main():
                         or text.startswith("LFO,")
                         or text.startswith("LF2,")
                         or text.startswith("MAT,")
+                        or text.startswith("OSC,")
+                        or text.startswith("PRST,")
                         or text.startswith("WAVE,")
                         or text.startswith("POLY,")
+                        or text.startswith("FXS,")
                     )
                     if is_control_msg and esp_path and esp_path != "-":
                         try:

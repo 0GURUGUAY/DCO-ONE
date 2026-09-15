@@ -1,6 +1,6 @@
 #pragma once
 
-#include "daisy_seed.h"
+#include "hid/midi.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -8,14 +8,7 @@ namespace dco {
 
 /**
  * @class MidiOut
- * @brief Minimal MIDI output over the existing USB CDC link.
- *
- * Messages are emitted as text frames so the Daisy keeps its CDC connection
- * to the ESP32 bridge alive.  A host can parse lines starting with "MIDI,"
- * and forward the hex bytes to a real MIDI sink.
- *
- * For this first phase only channel voice messages are implemented, fixed
- * on a single MIDI channel (default = channel 1, zero-indexed = 0).
+ * @brief MIDI output through the shared native USB MIDI handler.
  */
 class MidiOut
 {
@@ -27,11 +20,11 @@ public:
     ~MidiOut();
 
     /**
-     * Bind the MIDI output to a DaisySeed hardware instance.
-     * @param hw       Daisy hardware used for USB CDC output.
+    * Bind the MIDI output to an initialized USB MIDI handler.
+    * @param midi     USB MIDI handler shared with the input.
      * @param channel  Zero-based MIDI channel (0..15 => MIDI ch. 1..16).
      */
-    void Init(daisy::DaisySeed& hw, uint8_t channel = kDefaultChannel);
+    void Init(daisy::MidiUsbHandler& midi, uint8_t channel = kDefaultChannel);
 
     /** Change the target MIDI channel at runtime. */
     void SetChannel(uint8_t channel);
@@ -55,14 +48,13 @@ public:
     void SendClock();
 
     /**
-     * Send a raw MIDI message over CDC as a text frame.
-     * Format: "MIDI,<status>[,<data0>[,<data1>]]" with hex bytes.
+    * Send a raw MIDI message over native USB MIDI.
      * Pass data0/data1 as 0xFF to omit those bytes.
      */
     void SendMessage(uint8_t status, uint8_t data0 = 0xFF, uint8_t data1 = 0xFF);
 
 private:
-    daisy::DaisySeed* hw_;
+    daisy::MidiUsbHandler* midi_;
     uint8_t           channel_;
 };
 

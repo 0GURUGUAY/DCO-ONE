@@ -24,14 +24,27 @@ public:
     void SetModWaveform(uint8_t waveform); // daisysp::Oscillator::WAVE_* constant
     void SetAmplitude(float amp);
 
+    // Main OSC Coarse/Fine tuning, mirrored so switching Form stays in tune.
+    void SetCoarseTune(int32_t semitones);
+    void SetFineTune(int32_t cents);
+
+    // Real-time pitch modulation (e.g. LFO/matrix), in semitones.
+    void SetPitchModulation(float semitones);
+
 private:
+    void UpdateFrequency();
+
     daisysp::Oscillator car_;
     daisysp::Oscillator mod_;
     float sampleRate_;
+    float baseFrequency_;
     float frequency_;
     float ratio_;
     float index_;
     float amplitude_;
+    int32_t coarseSemitones_;
+    int32_t fineCents_;
+    float pitchModSemitones_;
 
     static constexpr float kIndexScalar = 0.2f; // matches DaisySP::Fm2's convention
 };
