@@ -577,3 +577,15 @@ comment utiliser les différentes options (SD, microphones) de l'ESP32 avec l'ap
 
 glide sur les steps
 
+1) choisir le rythme
+2) appliquer une syncopation
+3) ajouter des notes en choisissant :
+    a) la seconde majeure (passage mélodique simple mais efficace)
+    b) la tierce majeure (joyeuse et lumineuse)
+    c) la quarte juste (pour la tension)
+    d) la quinte juste (pour l'équilibre)
+    e) la sixte majeure (pour les ballades)
+
+4) règle des 70/30 : 70% de notes régulières, 30% de notes originales
+5) créer une partie A jouée 2 fois (avec une très légère différence du type partie A1 et A2), une partie B (qui surprend l'auditeur) jouée 1 fois et on finit par la partie A3.
+6) bien penser à résoudre la mélodie dans la partie A3.  

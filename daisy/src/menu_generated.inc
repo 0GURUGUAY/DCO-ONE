@@ -91,6 +91,7 @@ static MenuNode kOSC_osc_waveOptions[] = {
     { "Tri", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "Sin", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "FM", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Model", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
 static constexpr uint8_t kOSC_osc_waveOptionCount = sizeof(kOSC_osc_waveOptions) / sizeof(kOSC_osc_waveOptions[0]);
 
@@ -115,6 +116,29 @@ static MenuNode kOscFmSubmenu[] = {
 };
 static constexpr uint8_t kOscFmSubmenuCount = sizeof(kOscFmSubmenu) / sizeof(kOscFmSubmenu[0]);
 
+
+static MenuNode kOSC_osc_model_sustainOptions[] = {
+    { "Pluck", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "Bow", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+};
+static constexpr uint8_t kOSC_osc_model_sustainOptionCount = sizeof(kOSC_osc_model_sustainOptions) / sizeof(kOSC_osc_model_sustainOptions[0]);
+
+static NumericParam kOscModelStructureParam = { 0, 100, 1, 50, "%" };
+static NumericParam kOscModelBrightnessParam = { 0, 100, 1, 50, "%" };
+static NumericParam kOscModelDampingParam = { 0, 100, 1, 50, "%" };
+static NumericParam kOscModelAccentParam = { 0, 100, 1, 80, "%" };
+static NumericParam kOscModelExciterParam = { 0, 100, 1, 30, "%" };
+
+static MenuNode kOscModelSubmenu[] = {
+    { "Structure", COLOR_DEFAULT, nullptr, 0, ApplyOscModelStructure, 0, &kOscModelStructureParam, nullptr },
+    { "Brightness", COLOR_DEFAULT, nullptr, 0, ApplyOscModelBrightness, 0, &kOscModelBrightnessParam, nullptr },
+    { "Damping", COLOR_DEFAULT, nullptr, 0, ApplyOscModelDamping, 0, &kOscModelDampingParam, nullptr },
+    { "Accent", COLOR_DEFAULT, nullptr, 0, ApplyOscModelAccent, 0, &kOscModelAccentParam, nullptr },
+    { "Exciter", COLOR_DEFAULT, nullptr, 0, ApplyOscModelExciter, 0, &kOscModelExciterParam, nullptr },
+    { "Sustain", COLOR_DEFAULT, kOSC_osc_model_sustainOptions, kOSC_osc_model_sustainOptionCount, ApplyOscModelSustain, 0, nullptr, nullptr },
+};
+static constexpr uint8_t kOscModelSubmenuCount = sizeof(kOscModelSubmenu) / sizeof(kOscModelSubmenu[0]);
+
 static NumericParam kOscCoarseParam = { -24, 24, 1, 0, "st" };
 static NumericParam kOscFineParam = { -100, 100, 1, 0, "cents" };
 static NumericParam kOscPulseParam = { 0, 100, 1, 50, "%" };
@@ -129,6 +153,7 @@ static MenuNode kOscSubmenu[] = {
     { "Sub-Osc", COLOR_DEFAULT, nullptr, 0, ApplyOscSub, 0, &kOscSubParam, nullptr },
     { "Hard", COLOR_DEFAULT, nullptr, 0, ApplyOscHard, 0, &kOscHardParam, nullptr },
     { "FM", COLOR_DEFAULT, kOscFmSubmenu, kOscFmSubmenuCount, nullptr, 0, nullptr, nullptr },
+    { "Model", COLOR_DEFAULT, kOscModelSubmenu, kOscModelSubmenuCount, nullptr, 0, nullptr, nullptr },
 };
 static constexpr uint8_t kOscSubmenuCount = sizeof(kOscSubmenu) / sizeof(kOscSubmenu[0]);
 
@@ -281,6 +306,7 @@ static MenuNode kMATRIX_mod1_srcOptions[] = {
     { "VEL", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "MODWHEEL", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "CV1", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "ENV1", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
 static constexpr uint8_t kMATRIX_mod1_srcOptionCount = sizeof(kMATRIX_mod1_srcOptions) / sizeof(kMATRIX_mod1_srcOptions[0]);
 
@@ -292,6 +318,8 @@ static MenuNode kMATRIX_mod1_dstOptions[] = {
     { "PW", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "DRIVE", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "LFO_RATE", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "RESONANCE", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "VCA", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
 static constexpr uint8_t kMATRIX_mod1_dstOptionCount = sizeof(kMATRIX_mod1_dstOptions) / sizeof(kMATRIX_mod1_dstOptions[0]);
 
@@ -304,6 +332,7 @@ static MenuNode kMATRIX_mod2_srcOptions[] = {
     { "VEL", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "MODWHEEL", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "CV1", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "ENV1", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
 static constexpr uint8_t kMATRIX_mod2_srcOptionCount = sizeof(kMATRIX_mod2_srcOptions) / sizeof(kMATRIX_mod2_srcOptions[0]);
 
@@ -315,6 +344,8 @@ static MenuNode kMATRIX_mod2_dstOptions[] = {
     { "PW", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "DRIVE", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
     { "LFO_RATE", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "RESONANCE", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
+    { "VCA", COLOR_DEFAULT, nullptr, 0, nullptr, 0 },
 };
 static constexpr uint8_t kMATRIX_mod2_dstOptionCount = sizeof(kMATRIX_mod2_dstOptions) / sizeof(kMATRIX_mod2_dstOptions[0]);
 

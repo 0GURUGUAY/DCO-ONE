@@ -1,5 +1,6 @@
 #include "../shared/pattern_format.h"
 #include "../shared/pattern_transfer.h"
+#include "../shared/remote_control.h"
 #include <cassert>
 #include <cstdio>
 #include <deque>
@@ -21,6 +22,11 @@ struct TestDisk {
     bool List(uint8_t* bitmap) {
         if (fail) return false;
         if (present) bitmap[0] = 64;
+        return true;
+    }
+    bool Delete(int slot) {
+        if (fail || slot != 7) return false;
+        present = false;
         return true;
     }
 };
@@ -65,7 +71,13 @@ static void TestTransfer(const dco::PatchData& data)
     assert(client.Start(Op::List, 0, 100)); pump();
     assert(client.TakeResult(operation, slot, success) && success && client.available);
     assert(client.used[0] == 64);
+    assert(client.Start(Op::Delete, 7, 100)); pump();
+    assert(client.TakeResult(operation, slot, success) && success && operation == Op::Delete);
+    assert(!disk.present && client.used[0] == 0);
+    disk.present = true;
     disk.fail = true;
+    assert(client.Start(Op::Delete, 7, 100)); pump();
+    assert(client.TakeResult(operation, slot, success) && !success && disk.present);
     assert(client.Start(Op::Save, 7, 100, &data)); pump();
     assert(client.TakeResult(operation, slot, success) && !success && disk.writes == 1);
     assert(client.Start(Op::List, 0, 100)); pump();
@@ -88,6 +100,23 @@ static void TestTransfer(const dco::PatchData& data)
 
 int main()
 {
+    dco::RemoteCommand command;
+    assert(dco::ParseRemoteCommand("RMC,1,STATE", command));
+    assert(command.action == dco::RemoteAction::State);
+    assert(dco::ParseRemoteCommand("RMC,2,LOAD,128", command) && command.slot == 128);
+    assert(dco::ParseRemoteCommand("RMC,3,SAVE,1", command));
+    assert(dco::ParseRemoteCommand("RMC,4,STOP", command));
+    assert(dco::ParseRemoteCommand("RMC,4,PLAY", command));
+    assert(command.action == dco::RemoteAction::Play);
+    assert(dco::ParseRemoteCommand("RMC,5,DELETE,128", command));
+    assert(command.action == dco::RemoteAction::Delete);
+    assert(dco::ParseRemoteCommand("RMC,5,STEP,7,31,4,-14,24", command));
+    assert(command.step == 31 && command.state == 4 && command.degree == -14 && command.transpose == 24);
+    for (const char* invalid : {"RMC,1,LOAD,0", "RMC,1,SAVE,129", "RMC,1,STOP,1",
+                               "RMC,1,STEP,7,32,0,0,0", "RMC,1,STEP,7,0,5,0,0",
+                               "RMC,1,STEP,7,0,1,-15,0", "RMC,1,STEP,7,0,4,0,25",
+                               "RMC,1,STEP,7,0,1,0,0junk", "RMC,1,UNKNOWN", "SDR,1,OK"})
+        assert(!dco::ParseRemoteCommand(invalid, command));
     dco::PatternRecord record;
     record.data.numPolySteps = 32;
     record.data.numValues = 64;

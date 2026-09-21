@@ -130,7 +130,9 @@ c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tools/test_sd_
 /tmp/dco_test_sd_patterns
 sh tools/test_display_uart.sh
 sh tools/test_sequencer_audio.sh
-.venv/bin/python3 tools/test_midi_routing.py
+sh tools/test_usb_midi.sh
+sh tools/test_remote_control.sh
+node tools/test_remote_web.mjs
 .venv/bin/python3 tools/preview_display.py
 ```
 
@@ -139,10 +141,10 @@ and verify both are restored; reboot both boards and load the same slot again.
 Then test with no SD: SAVE must show failure and the running pattern must survive
 a failed LOAD. Host tests do not substitute for this physical SD/UART test.
 
-Stop the USB bridge before flashing. Identify the ESP32 port with `pio device
+The obsolete USB display bridges have been removed. Identify the ESP32 port with `pio device
 list`, then run `pio run -d esp32 -t upload --upload-port <esp32_port>`.
 Flash the Daisy in DFU mode, then press its RESET button. The display works
-without restarting a USB bridge. Verify OSC/Form, OSC/FM, LFO2 submenus,
+over UART; MIDI uses native USB. Verify OSC/Form, OSC/FM, LFO2 submenus,
 VCF Key/Drive/Env, envelope editing, HOME and the sequencer on the actual display.
 
 ### 0. Install Required Tools

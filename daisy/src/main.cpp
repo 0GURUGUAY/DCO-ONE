@@ -4,11 +4,14 @@
 #include "filter.h"
 #include "lfo.h"
 #include "fm.h"
+#include "model.h"
 #include "fx_chain.h"
 #include "input_manager.h"
 #include "midi.h"
 #include "patch_storage.h"
 #include "../../shared/pattern_transfer.h"
+#include "../../shared/remote_control.h"
+#include "../../shared/modulation.h"
 #include "util/scopedirqblocker.h"
 #include <cmath>
 #include <cstring>
@@ -52,6 +55,7 @@ enum WaveformType {
     WAVE_SAW,
     WAVE_TRIANGLE,
     WAVE_FM,
+    WAVE_MODEL,
     WAVE_COUNT
 };
 
@@ -150,6 +154,14 @@ OscillatorWrapper s_voices[kMaxChordVoices];
 // click-free.
 FmWrapper s_fm_voices[kMaxChordVoices];
 static bool s_osc_is_fm = false;
+// Physical-modeling voice pool (Karplus-Strong string, see model.h), used
+// instead of s_voices/s_fm_voices when Form == WAVE_MODEL. Its raw exciter
+// signal (GetExciter()) is mixed in on top of the resonator output, scaled
+// by s_model_exciter_amount (OSC > Model > Exciter), mirroring the
+// SOURCE+EXCITER->MIX split from the voice architecture diagram.
+ModelWrapper s_model_voices[kMaxChordVoices];
+static bool s_osc_is_model = false;
+static float s_model_exciter_amount = 0.3f;
 static bool        s_voice_active[kMaxChordVoices] = { false, false, false, false };
 static uint8_t     s_midi_notes[kMaxChordVoices]   = { 0xFF, 0xFF, 0xFF, 0xFF };
 static dco::MidiOut s_midi_out;
@@ -159,19 +171,31 @@ static dco::MidiOut s_midi_out;
 enum class VoiceSource : uint8_t { NONE = 0, SEQUENCER, MIDI_IN };
 static VoiceSource s_voice_source[kMaxChordVoices] = {};
 
-// Pushes frequency/amplitude to BOTH voice pools (regular waveform + FM) so
-// whichever one is active (s_osc_is_fm) always has up-to-date pitch/level,
-// keeping Form switches click-free.
+// Pushes frequency/amplitude to ALL voice pools (regular waveform + FM +
+// Model) so whichever one is active (s_osc_is_fm/s_osc_is_model) always has
+// up-to-date pitch/level, keeping Form switches click-free.
 static inline void SetVoicePitchAmp(int v, float freq, float amp)
 {
     s_voices[v].SetFrequency(freq);
     s_voices[v].SetAmplitude(amp);
     s_fm_voices[v].SetFrequency(freq);
     s_fm_voices[v].SetAmplitude(amp);
+    s_model_voices[v].SetFrequency(freq);
+    s_model_voices[v].SetAmplitude(amp);
+}
+
+// Strikes the Model voice's string on note-on (no-op for VCO/FM); call
+// alongside SetVoicePitchAmp wherever a NEW note starts sounding.
+static inline void TriggerModelVoice(int v)
+{
+    if (s_osc_is_model)
+        s_model_voices[v].Trig();
 }
 
 // Envelope 1 (amplitude ADSR) using DaisySP
 static daisysp::Adsr s_env1_adsr;
+static daisysp::Adsr s_env2_adsr;
+static float s_env2_last_output = 0.0f;
 static volatile bool s_env1_gate_wanted = false;
 static volatile uint32_t s_env1_retrigger_count = 0;
 static float s_env1_last_output = 0.0f; // envelope value at the end of the previous audio block, used to control-rate modulate the VCF cutoff below
@@ -191,27 +215,19 @@ static float s_vcf_base_cutoff_hz  = 5000.0f; // mirrors kVcfCutoffParam.value, 
 static constexpr float kVcfKeytrackRefHz     = 440.0f; // keytrack neutral point (A4)
 static constexpr float kVcfEnvOctaveRange    = 4.0f;   // +-100% env amount == +-4 octaves
 
-// LFO1 (see lfo.h): not routed to any modulation destination yet -- the
-// upcoming MATRIX block assigns it to VCO/VCF/VCA. Kept ticking and
-// displayed regardless, so its phase is already correct once wired up.
-// LFO2 menu/display is wired up on the ESP32; the audio engine block below
-// is still a placeholder until LFO2 is assigned to a modulation target.
 static dco::LfoWrapper s_lfo1;
+static dco::LfoWrapper s_lfo2;
+static int32_t s_lfo2_sync_mode = 0;
+static float s_lfo2_free_rate_hz = 8.0f;
+static float s_vcf_base_resonance = 0.3f;
+static float s_vcf_base_drive = 1.0f;
+static float s_osc_base_pulse = 0.5f;
 static int32_t s_lfo1_sync_mode    = 0;    // mirrors kLfoSubmenu[2].selectedIndex ( "1 Sync" )
 static float   s_lfo1_free_rate_hz = 10.0f; // mirrors kLfo1RateParam.value, set by ApplyLfo1Rate
 static float   s_lfo1_last_output  = 0.0f;  // last Process() output, -1..1 scaled by Amp
 static float   s_current_bpm_hz    = 120.0f; // mirrors kBpmParam.value, refreshed each main-loop tick
 
-// Two-slot modulation matrix. Sources/destinations are read from the menu's
-// selectedIndex in the audio callback; amounts are copied here by the apply
-// callbacks. Currently only LFO1 -> PITCH is wired, but the struct is ready
-// for additional sources/destinations.
-struct MatrixSlot {
-    uint8_t source;      // index into kMATRIX_modX_srcOptions (0 = NONE)
-    uint8_t destination; // index into kMATRIX_modX_dstOptions (0 = NONE)
-    float   amount;      // -1.0 .. 1.0
-};
-static MatrixSlot s_matrix_slots[2] = {};
+static dco::MatrixSlot s_matrix_slots[dco::kMatrixSlotCount] = {};
 
 // Beats-per-cycle for each "lfoX_sync" option after FREE (index 0), same
 // 4-beats-per-whole-note convention as PolyDivisionBeats() above.
@@ -296,6 +312,21 @@ static volatile float     s_midi_clock_samples_per_tick = (60.0f / 120.0f / 24.0
 static float              s_midi_clock_phase = 0.0f;         // ISR-only accumulator
 static volatile uint32_t  s_midi_clock_ticks_committed = 0;  // incremented by the ISR
 static uint32_t           s_midi_clock_ticks_sent = 0;       // consumed by the main loop
+
+// Poly step sequencer clock: the internal OSC/ENV1/VCA note trigger. Same
+// "decide sample-accurately in AudioCallback, drain in the main loop" pattern
+// as the MIDI clock above -- previously this step advance was decided in the
+// main loop via System::GetNow() polling, which is NOT fixed-rate (menu/
+// display/flash work in between checks). That let a knob turn (VCO/rhythm
+// parameter edit) delay a step trigger by however long that loop iteration
+// took, and let the internal step clock slowly drift apart from the
+// sample-accurate MIDI clock sent to a DAW (e.g. Ableton's kick, which
+// follows the MIDI clock, drifting away from the Daisy's own audible notes).
+static volatile bool      s_poly_clock_running = false;      // mirrors s_playing, read by ISR
+static volatile float     s_poly_step_samples_per_tick = (60.0f / 120.0f) * kAudioSampleRateHz; // updated from main loop as BPM/Div changes
+static float              s_poly_step_phase = 0.0f;          // ISR-only accumulator
+static volatile uint32_t  s_poly_step_ticks_committed = 0;   // incremented by the ISR
+static uint32_t           s_poly_step_ticks_sent = 0;        // consumed by the main loop
 
 static void PushSample(float sample)
 {
@@ -385,6 +416,33 @@ void AudioCallback(AudioHandle::InputBuffer in,
         }
     }
 
+    // Sample-accurate poly step sequencer tick decision -- same reasoning as
+    // the MIDI clock above, so the internal note trigger can never be
+    // delayed by main-loop menu/display/flash work, and never drifts apart
+    // from the MIDI clock sent out to a DAW.
+    if (s_poly_clock_running)
+    {
+        s_poly_step_phase -= static_cast<float>(size);
+        while (s_poly_step_phase <= 0.0f)
+        {
+            s_poly_step_ticks_committed++;
+            s_poly_step_phase += s_poly_step_samples_per_tick;
+        }
+    }
+
+    for (int slot = 0; slot < 2; ++slot)
+    {
+        s_matrix_slots[slot].source = GetMatrixSource(slot);
+        s_matrix_slots[slot].destination = GetMatrixDestination(slot);
+    }
+    float targets[8] = {};
+    dco::AccumulateModulation(s_matrix_slots, s_lfo1.GetLastOutput(),
+                             s_lfo2.GetLastOutput(), s_env1_last_output, targets, s_env2_last_output);
+    static float modulation[8] = {};
+    float smoothing = 1.0f - expf(-static_cast<float>(size) / (hw.AudioSampleRate() * 0.005f));
+    for (int destination = 1; destination < 8; ++destination)
+        modulation[destination] += smoothing * (targets[destination] - modulation[destination]);
+
     // VCF cutoff modulation (keytrack + ENV1 amount): recomputed once per
     // block instead of per sample -- a ~1.3ms lag on the modulation is
     // inaudible, and this keeps the log2f/powf calls off the per-sample path.
@@ -393,9 +451,12 @@ void AudioCallback(AudioHandle::InputBuffer in,
     {
         float keytrackOctaves = log2f(s_vcf_last_note_freq / kVcfKeytrackRefHz) * s_vcf_keytrack_amount;
         float envOctaves = s_vcf_env_amount * s_env1_last_output * kVcfEnvOctaveRange;
-        float cutoffHz = s_vcf_base_cutoff_hz * powf(2.0f, keytrackOctaves + envOctaves);
+        float cutoffHz = s_vcf_base_cutoff_hz * powf(2.0f, keytrackOctaves + envOctaves
+            + dco::LimitModulation(modulation[1], -4.0f, 4.0f) * 4.0f);
         cutoffHz = cutoffHz < 20.0f ? 20.0f : (cutoffHz > 20000.0f ? 20000.0f : cutoffHz);
         s_vcf_filter.SetCutoff(cutoffHz);
+        s_vcf_filter.SetResonance(dco::LimitModulation(s_vcf_base_resonance + modulation[6], 0.0f, 1.0f));
+        s_vcf_filter.SetDrive(dco::LimitModulation(s_vcf_base_drive + modulation[4], 0.0f, 1.0f));
     }
 
     // LFO1 rate: BPM-synced division when Sync != FREE, else the free Hz
@@ -409,7 +470,20 @@ void AudioCallback(AudioHandle::InputBuffer in,
             float bpm = s_current_bpm_hz < 1.0f ? 1.0f : s_current_bpm_hz;
             effectiveHz = bpm / (60.0f * LfoSyncDivisionBeats(s_lfo1_sync_mode));
         }
-        s_lfo1.SetRate(effectiveHz);
+        s_lfo1.SetRate(dco::LimitModulation(effectiveHz * powf(2.0f,
+            dco::LimitModulation(modulation[5], -4.0f, 4.0f) * 4.0f), 0.01f, 500.0f));
+        float secondHz = s_lfo2_sync_mode > 0
+            ? s_current_bpm_hz / (60.0f * LfoSyncDivisionBeats(s_lfo2_sync_mode))
+            : s_lfo2_free_rate_hz;
+        s_lfo2.SetRate(secondHz);
+    }
+    for (int voice = 0; voice < kMaxChordVoices; ++voice)
+    {
+        float pitch = dco::LimitModulation(modulation[2] * 12.0f, -48.0f, 48.0f);
+        s_voices[voice].SetPitchModulation(pitch);
+        s_fm_voices[voice].SetPitchModulation(pitch);
+        s_model_voices[voice].SetPitchModulation(pitch);
+        s_voices[voice].SetPulseWidth(dco::LimitModulation(s_osc_base_pulse + modulation[3] * 0.5f, 0.01f, 0.99f));
     }
 
     // FX slot type changes are requested from the menu thread but must only
@@ -438,14 +512,16 @@ void AudioCallback(AudioHandle::InputBuffer in,
         float sample = 0.0f;
         for (int v = 0; v < kMaxChordVoices; ++v)
             if (s_voice_active[v])
-                sample += s_osc_is_fm ? s_fm_voices[v].GetSample() : s_voices[v].GetSample();
+                sample += s_osc_is_fm ? s_fm_voices[v].GetSample()
+                        : s_osc_is_model ? (s_model_voices[v].GetSample()
+                                            + s_model_voices[v].GetExciter() * s_model_exciter_amount)
+                        : s_voices[v].GetSample();
 
         // VCF: applied to the raw oscillator mix, before the ENV1/VCA stage.
         sample = s_vcf_filter.Process(sample);
 
-        // LFO1: ticked every sample to keep its phase accurate; not yet
-        // routed to any destination (MATRIX assigns it to VCO/VCF/VCA next).
         s_lfo1.Process();
+        s_lfo2.Process();
 
         // Apply ENV1 amplitude envelope (retrigger on new notes).
         // The gate is the OR of the sequencer gate and any held MIDI IN notes.
@@ -465,9 +541,11 @@ void AudioCallback(AudioHandle::InputBuffer in,
             // (no gap) blend continuously instead of double-triggering, same
             // as a real analog mono synth.
             s_env1_adsr.Retrigger(false);
+            s_env2_adsr.Retrigger(false);
             last_retrigger = retrigger;
         }
         float envOut = s_env1_adsr.Process(gate);
+        s_env2_last_output = s_env2_adsr.Process(gate);
         s_env1_last_output = envOut;
         sample *= envOut;
 
@@ -476,7 +554,7 @@ void AudioCallback(AudioHandle::InputBuffer in,
         sample = s_fx_chain.Process(sample);
 
         // Apply master volume and output to both channels
-        sample *= s_master_volume;
+        sample *= s_master_volume * dco::LimitModulation(1.0f + modulation[7], 0.0f, 2.0f);
         out[0][i] = sample;
         out[1][i] = sample;
         
@@ -484,29 +562,6 @@ void AudioCallback(AudioHandle::InputBuffer in,
         PushSample(sample);
     }
     s_lfo1_last_output = s_lfo1.GetLastOutput();
-
-    // Read matrix source/destination selections (uint8_t, atomic read).
-    s_matrix_slots[0].source = GetMatrixSource(0);
-    s_matrix_slots[0].destination = GetMatrixDestination(0);
-    s_matrix_slots[1].source = GetMatrixSource(1);
-    s_matrix_slots[1].destination = GetMatrixDestination(1);
-
-    // Apply LFO1 -> PITCH modulation (other sources/destinations are stubs).
-    float pitchModSemitones = 0.0f;
-    for (int slot = 0; slot < 2; ++slot)
-    {
-        const MatrixSlot& mat = s_matrix_slots[slot];
-        if (mat.source == 0 || mat.destination == 0)
-            continue;
-        if (mat.source == 1 && mat.destination == 2) // LFO1 -> PITCH
-            pitchModSemitones += s_lfo1_last_output * mat.amount * 12.0f;
-    }
-
-    for (int v = 0; v < kMaxChordVoices; ++v)
-    {
-        s_voices[v].SetPitchModulation(pitchModSemitones);
-        s_fm_voices[v].SetPitchModulation(pitchModSemitones);
-    }
 }
 
 // Map WaveformType enum to DaisySP Oscillator waveform constants
@@ -525,6 +580,10 @@ static uint8_t WaveformTypeToDaisySP(WaveformType wave)
         case WAVE_FM:
             // FM voices are driven separately (s_fm_voices); this value is
             // never actually processed while FM is active.
+            return daisysp::Oscillator::WAVE_SIN;
+        case WAVE_MODEL:
+            // Model voices are driven separately (s_model_voices); this
+            // value is never actually processed while Model is active.
             return daisysp::Oscillator::WAVE_SIN;
         default:
             return daisysp::Oscillator::WAVE_SIN;
@@ -569,6 +628,12 @@ static void ApplyOscFmAmt(int32_t index);
 static void ApplyOscFmRatio(int32_t index);
 static void ApplyOscFmRatioFine(int32_t index);
 static void ApplyOscFmModWave(int32_t index);
+static void ApplyOscModelStructure(int32_t index);
+static void ApplyOscModelBrightness(int32_t index);
+static void ApplyOscModelDamping(int32_t index);
+static void ApplyOscModelAccent(int32_t index);
+static void ApplyOscModelExciter(int32_t index);
+static void ApplyOscModelSustain(int32_t index);
 static void ApplyVcfType(int32_t index);
 static void ApplyVcfCutoff(int32_t index);
 static void ApplyVcfResonance(int32_t index);
@@ -648,7 +713,8 @@ uint8_t GetMatrixDestination(int slot)
 static void ApplyWaveform(int32_t index)
 {
     WaveformType wave = static_cast<WaveformType>(((index % WAVE_COUNT) + WAVE_COUNT) % WAVE_COUNT);
-    s_osc_is_fm = (wave == WAVE_FM);
+    s_osc_is_fm    = (wave == WAVE_FM);
+    s_osc_is_model = (wave == WAVE_MODEL);
     for (int v = 0; v < kMaxChordVoices; ++v)
         s_voices[v].SetWaveform(WaveformTypeToDaisySP(wave));
 }
@@ -664,6 +730,7 @@ static void ApplyOscCoarse(int32_t index)
     {
         s_voices[v].SetCoarseTune(semitones);
         s_fm_voices[v].SetCoarseTune(semitones);
+        s_model_voices[v].SetCoarseTune(semitones);
     }
 }
 
@@ -675,6 +742,7 @@ static void ApplyOscFine(int32_t index)
     {
         s_voices[v].SetFineTune(cents);
         s_fm_voices[v].SetFineTune(cents);
+        s_model_voices[v].SetFineTune(cents);
     }
 }
 
@@ -682,6 +750,7 @@ static void ApplyOscPulse(int32_t index)
 {
     (void)index;
     float duty = static_cast<float>(kOscPulseParam.value) / 100.0f;
+    s_osc_base_pulse = duty;
     for (int v = 0; v < kMaxChordVoices; ++v)
         s_voices[v].SetPulseWidth(duty);
 }
@@ -746,6 +815,49 @@ static void ApplyOscFmModWave(int32_t index)
         s_fm_voices[v].SetModWaveform(wf);
 }
 
+// Model (OSC > Model submenu): Karplus-Strong string voice (see model.h/.cpp).
+static void ApplyOscModelStructure(int32_t index)
+{
+    float structure = static_cast<float>(index) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_model_voices[v].SetStructure(structure);
+}
+
+static void ApplyOscModelBrightness(int32_t index)
+{
+    float brightness = static_cast<float>(index) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_model_voices[v].SetBrightness(brightness);
+}
+
+static void ApplyOscModelDamping(int32_t index)
+{
+    float damping = static_cast<float>(index) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_model_voices[v].SetDamping(damping);
+}
+
+static void ApplyOscModelAccent(int32_t index)
+{
+    float accent = static_cast<float>(index) / 100.0f;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_model_voices[v].SetAccent(accent);
+}
+
+static void ApplyOscModelExciter(int32_t index)
+{
+    s_model_exciter_amount = static_cast<float>(index) / 100.0f;
+}
+
+// Sustain (Pluck=0/Bow=1): Bow keeps the string continuously excited by
+// noise (bowed-instrument character) instead of a single struck decay.
+static void ApplyOscModelSustain(int32_t index)
+{
+    bool sustain = index != 0;
+    for (int v = 0; v < kMaxChordVoices; ++v)
+        s_model_voices[v].SetSustain(sustain);
+}
+
 // VCF: Filter type list (LP24/LP12/BP12/HP12/NOTCH), maps 1:1 to dco::FilterType.
 static void ApplyVcfType(int32_t index)
 {
@@ -761,7 +873,7 @@ static void ApplyVcfCutoff(int32_t index)
 
 static void ApplyVcfResonance(int32_t index)
 {
-    s_vcf_filter.SetResonance(static_cast<float>(index) * 0.01f);
+    s_vcf_base_resonance = static_cast<float>(index) * 0.01f;
 }
 
 // Keytrack amount is applied live in AudioCallback's per-block cutoff
@@ -773,7 +885,7 @@ static void ApplyVcfKey(int32_t index)
 
 static void ApplyVcfDrive(int32_t index)
 {
-    s_vcf_filter.SetDrive(static_cast<float>(index) * 0.01f);
+    s_vcf_base_drive = static_cast<float>(index) * 0.01f;
 }
 
 // Env amount (-100..100%) is applied live in AudioCallback alongside keytrack.
@@ -807,10 +919,32 @@ static void ApplyEnv1Release(int32_t index)
     (void)index;
     s_env1_adsr.SetTime(daisysp::ADSR_SEG_RELEASE, static_cast<float>(kEnv1ReleaseParam.value) / 1000.0f);
 }
-static void ApplyEnv2Attack(int32_t index) {}
-static void ApplyEnv2Decay(int32_t index) {}
-static void ApplyEnv2Sustain(int32_t index) {}
-static void ApplyEnv2Release(int32_t index) {}
+static void ApplyEnv2Attack(int32_t index)
+{
+    s_env2_adsr.SetTime(daisysp::ADSR_SEG_ATTACK, static_cast<float>(index) / 1000.0f);
+}
+static void ApplyEnv2Decay(int32_t index)
+{
+    s_env2_adsr.SetTime(daisysp::ADSR_SEG_DECAY, static_cast<float>(index) / 1000.0f);
+}
+static void ApplyEnv2Sustain(int32_t index)
+{
+    s_env2_adsr.SetSustainLevel(dco::LimitModulation(static_cast<float>(index) * 0.01f, 0.0f, 1.0f));
+}
+static void ApplyEnv2Release(int32_t index)
+{
+    s_env2_adsr.SetTime(daisysp::ADSR_SEG_RELEASE, static_cast<float>(index) / 1000.0f);
+}
+
+static void InitEnvelope2()
+{
+    s_env2_adsr.Init(hw.AudioSampleRate());
+    s_env2_last_output = 0.0f;
+    ApplyEnv2Attack(kEnv2AttackParam.value);
+    ApplyEnv2Decay(kEnv2DecayParam.value);
+    ApplyEnv2Sustain(kEnv2SustainParam.value);
+    ApplyEnv2Release(kEnv2ReleaseParam.value);
+}
 
 // LFO1: Shape list maps 1:1 to dco::LfoShape; Sync only stores the selected
 // division (index 0 = FREE) -- the actual effective rate, free-running Hz vs.
@@ -842,13 +976,11 @@ static void ApplyLfo1Phase(int32_t index)
     s_lfo1.SetPhaseDegrees(static_cast<float>(index));
 }
 
-// LFO2: menu/display frames are wired up on the ESP32; the audio engine is
-// still a placeholder until LFO2 is assigned to a modulation target.
-static void ApplyLfo2Shape(int32_t index) {}
-static void ApplyLfo2Rate(int32_t index) {}
-static void ApplyLfo2Sync(int32_t index) {}
-static void ApplyLfo2Amp(int32_t index) {}
-static void ApplyLfo2Phase(int32_t index) {}
+static void ApplyLfo2Shape(int32_t index) { s_lfo2.SetShape(static_cast<dco::LfoShape>(index)); }
+static void ApplyLfo2Rate(int32_t index) { s_lfo2_free_rate_hz = static_cast<float>(index); }
+static void ApplyLfo2Sync(int32_t index) { s_lfo2_sync_mode = index; }
+static void ApplyLfo2Amp(int32_t index) { s_lfo2.SetAmount(static_cast<float>(index) * 0.01f); }
+static void ApplyLfo2Phase(int32_t index) { s_lfo2.SetPhaseDegrees(static_cast<float>(index)); }
 static void ApplyMatSlot1Amt(int32_t index)
 {
     s_matrix_slots[0].amount = static_cast<float>(index) * 0.01f;
@@ -1109,6 +1241,19 @@ static void WalkMenuTree(MenuNode* node, SettingsWalkMode mode, Settings& s,
         ++selIdx;
         for (uint8_t i = 0; i < node->childCount; ++i)
             WalkMenuTree(&node->children[i], mode, s, valIdx, selIdx);
+    }
+    if (node == &kRootNode)
+    {
+        constexpr size_t firstExtra = sizeof(s.selections) / sizeof(s.selections[0]) - 6;
+        if (selIdx <= firstExtra)
+            for (int slot = 2; slot < dco::kMatrixSlotCount; ++slot)
+            {
+                auto& packed = s.selections[firstExtra + slot - 2];
+                if (mode == SettingsWalkMode::kCollect)
+                    packed = dco::PackMatrixSlot(s_matrix_slots[slot]);
+                else
+                    s_matrix_slots[slot] = dco::UnpackMatrixSlot(packed);
+            }
     }
 }
 
@@ -1384,6 +1529,7 @@ static void ApplySys440Hz(int32_t index)
     {
         s_playing = false;
         s_midi_clock_running = false;
+        s_poly_clock_running = false;
         s_midi_out.SendStop();
         SendPlayStatus();
     }
@@ -1428,6 +1574,7 @@ static void PlayArpNote(int index)
         ScopedIrqBlocker audioUpdate;
         SetVoicePitchAmp(0, freq, 0.3f / kMaxChordVoices);
         s_voice_active[0] = true;
+        TriggerModelVoice(0);
         s_voice_source[0] = VoiceSource::SEQUENCER;
         for (int voice = 1; voice < kMaxChordVoices; ++voice)
         {
@@ -1519,6 +1666,7 @@ static void TriggerPolyStep(int stepIndex)
                 {
                     SetVoicePitchAmp(voice, frequencies[voice], 0.3f / kMaxChordVoices);
                     s_voice_active[voice] = true;
+                    TriggerModelVoice(voice);
                     s_voice_source[voice] = VoiceSource::SEQUENCER;
                 }
                 else
@@ -1569,6 +1717,7 @@ static void TriggerPolyStep(int stepIndex)
             ScopedIrqBlocker audioUpdate;
             SetVoicePitchAmp(0, rootFreq, 0.3f / kMaxChordVoices);
             s_voice_active[0] = true;
+            TriggerModelVoice(0);
             s_voice_source[0] = VoiceSource::SEQUENCER;
             for (int voice = 1; voice < kMaxChordVoices; ++voice)
             {
@@ -1652,6 +1801,7 @@ static void TriggerMidiNoteOn(uint8_t note, uint8_t velocity)
 
     SetVoicePitchAmp(v, freq, amp);
     s_voice_active[v] = true;
+    TriggerModelVoice(v);
     s_voice_source[v] = VoiceSource::MIDI_IN;
     s_midi_notes[v]   = note;
     s_vcf_last_note_freq = freq;
@@ -1856,8 +2006,17 @@ static void SendNextStatusFrame()
                          static_cast<long>(kFxFx3Submenu[0].selectedIndex),
                          static_cast<long>(kFxFx4Submenu[0].selectedIndex));
                     break;
+                case 8:
+                    DisplayPrintLine("MDL,ST=%ld,BR=%ld,DM=%ld,AC=%ld,EX=%ld,SU=%ld",
+                         static_cast<long>(kOscModelStructureParam.value),
+                         static_cast<long>(kOscModelBrightnessParam.value),
+                         static_cast<long>(kOscModelDampingParam.value),
+                         static_cast<long>(kOscModelAccentParam.value),
+                         static_cast<long>(kOscModelExciterParam.value),
+                         static_cast<long>(kOscModelSubmenu[5].selectedIndex));
+                    break;
     }
-                s_status_frame_index = (s_status_frame_index + 1) % 8;
+                s_status_frame_index = (s_status_frame_index + 1) % 9;
 }
 
 static void SendPlayStatus()
@@ -2005,6 +2164,7 @@ static void SendPolyState()
 // (cutoff, envelope times, etc.) must be pushed explicitly.
 static void ApplyAllEngineSettings()
 {
+    InitEnvelope2();
     s_env1_adsr.Init(hw.AudioSampleRate());
     ApplyEnv1Attack(kEnv1AttackParam.value);
     ApplyEnv1Decay(kEnv1DecayParam.value);
@@ -2025,6 +2185,20 @@ static void ApplyAllEngineSettings()
     ApplyLfo1Sync(kLfoSubmenu[2].selectedIndex);
     ApplyLfo1Amp(kLfo1AmpParam.value);
     ApplyLfo1Phase(kLfo1PhaseParam.value);
+
+    s_lfo2.Init(hw.AudioSampleRate());
+    ApplyLfo2Shape(kLfoSubmenu[5].selectedIndex);
+    ApplyLfo2Rate(kLfo2RateParam.value);
+    ApplyLfo2Sync(kLfoSubmenu[7].selectedIndex);
+    ApplyLfo2Amp(kLfo2AmpParam.value);
+    ApplyLfo2Phase(kLfo2PhaseParam.value);
+    ApplyMatSlot1Amt(kMatSlot1AmtParam.value);
+    ApplyMatSlot2Amt(kMatSlot2AmtParam.value);
+    ApplyOscCoarse(kOscCoarseParam.value);
+    ApplyOscFine(kOscFineParam.value);
+    ApplyOscPulse(kOscPulseParam.value);
+    ApplyOscSub(kOscSubParam.value);
+    ApplyOscHard(kOscHardParam.value);
 
     ApplySysVolume(kSysVolumeParam.value);
 
@@ -2105,6 +2279,7 @@ static void CompletePatchLoad(int32_t slot, const dco::PatchData& patch)
     {
         s_playing = false;
         s_midi_clock_running = false;
+        s_poly_clock_running = false;
         s_midi_out.SendStop();
     }
     PanicSilence();
@@ -2129,10 +2304,186 @@ static void CompletePatchLoad(int32_t slot, const dco::PatchData& patch)
     s_midi_out.SendStart();
     s_midi_clock_phase = 0.0f;
     s_midi_clock_running = true;
+    s_poly_step_phase = 0.0f;
+    s_poly_clock_running = true;
 
     s_poly_wheel_active = true;
     SendPlayStatus();
     SendPolyState();
+}
+
+static unsigned s_remote_pending = 0;
+
+static MenuNode* RemoteParameterNode(int group, int parameter)
+{
+    if (parameter < 0) return nullptr;
+    if (group == 0 && parameter < 10)
+        return parameter < 6 ? &kOscSubmenu[parameter] : &kOscFmSubmenu[parameter - 6];
+    if (group == 1 && parameter < 6) return &kVcfSubmenu[parameter];
+    if (group == 2 && parameter < 10) return &kLfoSubmenu[parameter];
+    if (group == 3 && parameter < 6) return &kMatrixSubmenu[parameter];
+    if (group == 4 && parameter < 8)
+        return parameter < 4 ? &kEnv1Submenu[parameter] : &kEnv2Submenu[parameter - 4];
+    return nullptr;
+}
+
+static bool ApplyRemoteParameter(const dco::RemoteCommand& command)
+{
+    if (command.group == 3)
+    {
+        int field = command.parameter % 3;
+        if ((field == 0 && !dco::MatrixSourceSupported(command.value))
+            || (field == 1 && (command.value < 0 || command.value > 7))
+            || (field == 2 && (command.value < -100 || command.value > 100))) return false;
+        if (command.parameter >= 6)
+        {
+            ScopedIrqBlocker blocker;
+            auto& route = s_matrix_slots[command.parameter / 3];
+            if (field == 0) route.source = command.value;
+            else if (field == 1) route.destination = command.value;
+            else route.amount = command.value * 0.01f;
+            return true;
+        }
+    }
+    MenuNode* node = RemoteParameterNode(command.group, command.parameter);
+    if (!node) return false;
+    if (node->numeric)
+    {
+        if (command.value < node->numeric->minValue || command.value > node->numeric->maxValue) return false;
+    }
+    else if (command.value < 0 || command.value >= node->childCount) return false;
+    ScopedIrqBlocker blocker;
+    if (node->numeric) node->numeric->value = command.value;
+    else node->selectedIndex = command.value;
+    if (node->onSelect) node->onSelect(command.value);
+    return true;
+}
+
+static void SendRemoteParameters()
+{
+    for (int group = 0; group < 5; ++group)
+    {
+        int32_t values[24] = {};
+        for (int parameter = 0; parameter < 24; ++parameter)
+        {
+            MenuNode* node = RemoteParameterNode(group, parameter);
+            if (node) values[parameter] = node->numeric ? node->numeric->value : node->selectedIndex;
+            else if (group == 3 && parameter >= 6)
+            {
+                const auto& route = s_matrix_slots[parameter / 3];
+                values[parameter] = parameter % 3 == 0 ? route.source : parameter % 3 == 1
+                    ? route.destination : static_cast<int32_t>(roundf(route.amount * 100.0f));
+            }
+        }
+        char hex[sizeof(values) * 2 + 1];
+        dco::EncodeHex(reinterpret_cast<const uint8_t*>(values), sizeof(values), hex);
+        DisplayPrintLine("RMP,%d,%d,%s", s_current_patch, group, hex);
+    }
+}
+
+static void SendRemoteState()
+{
+    SendRemoteParameters();
+    dco::PatchPolyStep steps[kMaxPolySteps];
+    for (int index = 0; index < kMaxPolySteps; ++index)
+        steps[index] = {s_poly_steps[index].state, s_poly_steps[index].degree,
+                        s_poly_steps[index].fixedTranspose};
+    char hex[sizeof(steps) * 2 + 1];
+    dco::EncodeHex(reinterpret_cast<const uint8_t*>(steps), sizeof(steps), hex);
+    DisplayPrintLine("RMS,%d,%d,%d,%d,%ld,%d,%s", s_current_patch, s_playing ? 1 : 0,
+                     ClampedPolyStepCount(), s_poly_play_step, static_cast<long>(kBpmParam.value),
+                     s_sd_client.Busy() ? 1 : 0, hex);
+}
+
+static void RemoteReply(unsigned id, const char* result)
+{
+    SendRemoteState();
+    DisplayPrintLine("RMR,%u,%s", id, result);
+}
+
+static void HandleRemoteCommand(const char* line, uint32_t now)
+{
+    dco::RemoteCommand command;
+    if (!dco::ParseRemoteCommand(line, command))
+    {
+        RemoteReply(command.id, "ERR,REQUEST");
+        return;
+    }
+    if (command.action == dco::RemoteAction::State)
+    {
+        SendRemoteState();
+        return;
+    }
+    if (!command.id || s_sd_client.Busy() || s_remote_pending)
+    {
+        RemoteReply(command.id, "ERR,BUSY");
+        return;
+    }
+    if (command.action == dco::RemoteAction::Load || command.action == dco::RemoteAction::Save
+        || command.action == dco::RemoteAction::Delete)
+    {
+        auto operation = command.action == dco::RemoteAction::Load ? dco::PatternClient::Operation::Load
+            : command.action == dco::RemoteAction::Save ? dco::PatternClient::Operation::Save
+            : dco::PatternClient::Operation::Delete;
+        dco::PatchData patch;
+        if (operation == dco::PatternClient::Operation::Save) CopySettingsToPatchData(patch);
+        if (s_sd_client.Start(operation, command.slot, now, &patch)) s_remote_pending = command.id;
+        else RemoteReply(command.id, "ERR,BUSY");
+        return;
+    }
+    if (command.action == dco::RemoteAction::Param)
+    {
+        if (command.slot != s_current_patch) { RemoteReply(command.id, "ERR,STALE"); return; }
+        if (s_editing_numeric) { RemoteReply(command.id, "ERR,BUSY"); return; }
+        if (!ApplyRemoteParameter(command)) { RemoteReply(command.id, "ERR,REQUEST"); return; }
+        MarkSettingsDirty(now);
+    }
+    else if (command.action == dco::RemoteAction::Play)
+    {
+        s_440hz_test_active = false;
+        s_playing = true;
+        s_poly_play_step = 0;
+        s_pingpong_index = 0;
+        s_auto_steps_until_change = kPlayAutoParam.value;
+        TriggerPolyStep(0);
+        s_midi_out.SendStart();
+        s_midi_clock_phase = 0.0f;
+        s_midi_clock_running = true;
+        s_poly_step_phase = 0.0f;
+        s_poly_clock_running = true;
+    }
+    else if (command.action == dco::RemoteAction::Stop)
+    {
+        s_playing = false;
+        s_440hz_test_active = false;
+        s_midi_clock_running = false;
+        s_poly_clock_running = false;
+        s_poly_play_step = -1;
+        PanicSilence();
+        s_midi_out.SendStop();
+    }
+    else
+    {
+        if (command.slot != s_current_patch || command.step >= ClampedPolyStepCount())
+        {
+            RemoteReply(command.id, "ERR,STALE");
+            return;
+        }
+        s_poly_cursor = command.step;
+        s_poly_steps[command.step] = {static_cast<uint8_t>(command.state),
+            static_cast<int8_t>(command.degree), static_cast<int8_t>(command.transpose)};
+        MarkSettingsDirty(now);
+        if (s_playing && s_poly_play_step == command.step)
+        {
+            if (command.state == POLY_OFF) ReleaseSequencerVoices();
+            else TriggerPolyStep(s_poly_play_step);
+        }
+        s_editing_numeric = false;
+        s_poly_wheel_active = true;
+    }
+    SendPlayStatus();
+    if (s_poly_wheel_active) SendPolyState();
+    RemoteReply(command.id, "OK");
 }
 
 static void ServicePatternStorage(uint32_t now)
@@ -2157,7 +2508,11 @@ static void ServicePatternStorage(uint32_t now)
         if (value == '\n')
         {
             line[length] = '\0';
-            if (!discard) s_sd_client.Receive(line, now);
+            if (!discard)
+            {
+                if (strncmp(line, "RMC,", 4) == 0) HandleRemoteCommand(line, now);
+                else s_sd_client.Receive(line, now);
+            }
             length = 0;
             discard = false;
         }
@@ -2189,14 +2544,24 @@ static void ServicePatternStorage(uint32_t now)
                 s_patch_used[slot - 1] = true;
                 s_current_patch = slot;
             }
+            if (success && operation == dco::PatternClient::Operation::Delete)
+            {
+                s_patch_used[slot - 1] = false;
+                if (s_current_patch == slot) s_current_patch = 0;
+            }
             DEBUG_LOG("[SD] %s slot %d: %s",
                          operation == dco::PatternClient::Operation::Save ? "SAVE" : "LOAD",
                          slot, success ? "OK" : "FAILED");
             if (success && operation == dco::PatternClient::Operation::Load)
             {
+                s_editing_numeric = false;
                 CompletePatchLoad(slot, s_sd_client.record.data);
+                if (s_remote_pending) RemoteReply(s_remote_pending, "OK");
+                s_remote_pending = 0;
                 return;
             }
+            if (s_remote_pending) RemoteReply(s_remote_pending, success ? "OK" : "ERR,SD");
+            s_remote_pending = 0;
         }
         if (s_menu_stack[s_menu_depth]->children == kPresetsSubmenu)
         {
@@ -2222,6 +2587,7 @@ static void ApplyInitPatch(int32_t index)
     {
         s_playing = false;
         s_midi_clock_running = false;
+        s_poly_clock_running = false;
         s_midi_out.SendStop();
     }
     PanicSilence();
@@ -2278,6 +2644,8 @@ int main(void)
         s_voices[v].SetAmplitude(0.3f / kMaxChordVoices);
         s_fm_voices[v].Init(hw.AudioSampleRate());
         s_fm_voices[v].SetAmplitude(0.3f / kMaxChordVoices);
+        s_model_voices[v].Init(hw.AudioSampleRate());
+        s_model_voices[v].SetAmplitude(0.3f / kMaxChordVoices);
     }
 
     // Test-mode 440Hz sine generator (SYSTEM > 440Hz), kept quiet at 0.5 amplitude
@@ -2312,6 +2680,7 @@ int main(void)
 
     // Initialize ENV1 amplitude envelope after settings are loaded so the
     // restored A/D/S/R values are active immediately.
+    InitEnvelope2();
     s_env1_adsr.Init(hw.AudioSampleRate());
     ApplyEnv1Attack(kEnv1AttackParam.value);
     ApplyEnv1Decay(kEnv1DecayParam.value);
@@ -2340,6 +2709,15 @@ int main(void)
     ApplyLfo1Amp(kLfo1AmpParam.value);
     ApplyLfo1Phase(kLfo1PhaseParam.value);
 
+    s_lfo2.Init(hw.AudioSampleRate());
+    ApplyLfo2Shape(kLfoSubmenu[5].selectedIndex);
+    ApplyLfo2Rate(kLfo2RateParam.value);
+    ApplyLfo2Sync(kLfoSubmenu[7].selectedIndex);
+    ApplyLfo2Amp(kLfo2AmpParam.value);
+    ApplyLfo2Phase(kLfo2PhaseParam.value);
+    ApplyMatSlot1Amt(kMatSlot1AmtParam.value);
+    ApplyMatSlot2Amt(kMatSlot2AmtParam.value);
+
     // Initialize the four-slot FX chain and push the restored/default values.
     s_fx_chain.Init(hw.AudioSampleRate());
     ApplyAllFxSettings();
@@ -2359,6 +2737,17 @@ int main(void)
     ApplyOscFmRatio(kOscFmRatioParam.value);
     ApplyOscFmRatioFine(kOscFmRatioFineParam.value);
     ApplyOscFmAmt(kOscFmAmtParam.value);
+
+    // OSC > Model: same reasoning -- Structure/Brightness/Damping/Accent/
+    // Exciter are numeric leaves (explicit push needed); Sustain is a list
+    // node so WalkMenuTree's restore already re-fires ApplyOscModelSustain,
+    // still pushed explicitly here to cover the very first boot.
+    ApplyOscModelStructure(kOscModelStructureParam.value);
+    ApplyOscModelBrightness(kOscModelBrightnessParam.value);
+    ApplyOscModelDamping(kOscModelDampingParam.value);
+    ApplyOscModelAccent(kOscModelAccentParam.value);
+    ApplyOscModelExciter(kOscModelExciterParam.value);
+    ApplyOscModelSustain(kOscModelSubmenu[5].selectedIndex);
 
     // OSC main parameters are also numeric leaves: push restored/default values.
     ApplyOscCoarse(kOscCoarseParam.value);
@@ -2450,7 +2839,6 @@ int main(void)
     uint32_t last_status_send = System::GetNow();
     uint32_t last_audio_send = System::GetNow();
     uint32_t last_poly_send = System::GetNow();
-    uint32_t last_poly_step_ms = System::GetNow();
 
     // Send the initial state once so the ESP32 doesn't wait a full heartbeat
     SendMenuPath();
@@ -2500,12 +2888,13 @@ int main(void)
             if (s_playing)
             {
                 s_poly_play_step = 0;
-                last_poly_step_ms = now;
                 s_auto_steps_until_change = kPlayAutoParam.value; // reset AUTO counter
                 TriggerPolyStep(s_poly_play_step);
                 s_midi_out.SendStart();
                 s_midi_clock_phase = 0.0f; // fire the first tick promptly on play
                 s_midi_clock_running = true;
+                s_poly_step_phase = 0.0f; // fire the first step promptly on play
+                s_poly_clock_running = true;
             }
             else
             {
@@ -2513,6 +2902,7 @@ int main(void)
                 s_poly_play_step = -1;
                 s_midi_out.SendStop();
                 s_midi_clock_running = false;
+                s_poly_clock_running = false;
             }
             }
             SendPlayStatus();
@@ -2773,9 +3163,9 @@ int main(void)
             if (bpm < 1.0f)
                 bpm = 1.0f;
 
-            // Keep the ISR's clock period in sync with the live BPM, then
-            // drain whatever ticks it already decided were due (sample-
-            // accurate; see s_midi_clock_* declarations above).
+            // Keep the ISR's clock periods in sync with the live BPM/Div,
+            // then drain whatever ticks it already decided were due (sample-
+            // accurate; see s_midi_clock_*/s_poly_step_* declarations above).
             s_midi_clock_samples_per_tick = (60.0f / bpm / 24.0f) * kAudioSampleRateHz;
             uint32_t clockTicksCommitted = s_midi_clock_ticks_committed;
             while (s_midi_clock_ticks_sent != clockTicksCommitted)
@@ -2784,12 +3174,13 @@ int main(void)
                 s_midi_clock_ticks_sent++;
             }
 
-            uint32_t stepDurationMs =
-                static_cast<uint32_t>((60000.0f / bpm) * PolyDivisionBeats(divIdx));
-            if (stepDurationMs < 1)
-                stepDurationMs = 1;
-            if (now - last_poly_step_ms >= stepDurationMs)
+            s_poly_step_samples_per_tick = (60.0f / bpm) * PolyDivisionBeats(divIdx) * kAudioSampleRateHz;
+            if (s_poly_step_samples_per_tick < 1.0f)
+                s_poly_step_samples_per_tick = 1.0f;
+            uint32_t polyTicksCommitted = s_poly_step_ticks_committed;
+            while (s_poly_step_ticks_sent != polyTicksCommitted)
             {
+                s_poly_step_ticks_sent++;
                 int stepCount = ClampedPolyStepCount();
 
                 // Advance the playhead according to the selected direction
@@ -2841,7 +3232,6 @@ int main(void)
                 }
 
                 TriggerPolyStep(s_poly_play_step);
-                last_poly_step_ms = now;
                 if (s_poly_wheel_active)
                 {
                     SendPolyState();

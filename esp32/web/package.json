@@ -1,0 +1,13 @@
+{
+  "name": "dco-one-remote",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../tools/build_remote_web.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "lucide": "0.468.0",
+    "playwright": "^1.63.0"
+  }
+}

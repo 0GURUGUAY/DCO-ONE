@@ -27,3 +27,6 @@ backup_*/
 
 # PlatformIO
 .pio/
+
+# Web build dependencies
+node_modules/

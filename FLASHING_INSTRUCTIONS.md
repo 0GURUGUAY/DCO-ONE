@@ -53,20 +53,16 @@
 - Removed blue circle border
 - Displays BPM at top, waveform in middle, Root/Scale/Play at bottom
 
-### USB Bridge
-- Added relay of `WAVE,` messages from Daisy to ESP32
+### UART Display Link
+- `WAVE,` messages now travel directly from Daisy D13 to ESP32 GPIO44.
+- Return commands use ESP32 GPIO43 to Daisy D14, with a common ground.
+- The obsolete USB display bridge scripts have been removed. Native USB MIDI remains available.
 
 ## Testing
 
 After flashing both boards:
 
-1. **Start the USB Bridge:**
-   ```bash
-   cd /Users/maxpatissier/Downloads/DCO-ONE
-   source .venv/bin/activate
-   python3 usb_bridge.py /dev/cu.usbmodem3764336034331 /dev/cu.usbmodem101
-   ```
-   (Update port numbers as needed)
+1. **Press RESET on the Daisy and check the UART connection.** No host bridge is required.
 
 2. **Verify:**
    - ESP32 display should show waveform in center

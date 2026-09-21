@@ -1,5 +1,8 @@
 # Waveform Display Implementation Summary
 
+> Historical implementation notes. The current display transport is direct UART,
+> not a USB host bridge. The scripts mentioned below were removed; see WIFI_REMOTE.md.
+
 ## ✅ Completed Tasks
 
 ### 1. Audio Stream from Daisy to ESP32

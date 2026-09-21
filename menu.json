@@ -138,7 +138,7 @@
       "icon": "icon_vco",
       "color": "#FF6B00",
       "submenus": [
-        { "id": "osc_wave", "label": "Form", "type": "ENUM", "options": ["Saw", "Pulse", "Tri", "Sin", "FM"], "default": 0 },
+        { "id": "osc_wave", "label": "Form", "type": "ENUM", "options": ["Saw", "Pulse", "Tri", "Sin", "FM", "Model"], "default": 0 },
         { "id": "osc_coarse", "label": "Coarse", "type": "INT", "min": -24, "max": 24, "step": 1, "default": 0, "unit": "st" },
         { "id": "osc_fine", "label": "Fine", "type": "INT", "min": -100, "max": 100, "step": 1, "default": 0, "unit": "cents" },
         { "id": "osc_pw", "label": "Pulse", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
@@ -153,6 +153,19 @@
             { "id": "osc_fm_ratio", "label": "Ratio", "type": "INT", "min": 1, "max": 32, "step": 1, "default": 2, "unit": "x" },
             { "id": "osc_fm_ratio_fine", "label": "Ratio Fine", "type": "INT", "min": -50, "max": 50, "step": 1, "default": 0, "unit": "%" },
             { "id": "osc_fm_modwave", "label": "Mod Wave", "type": "ENUM", "options": ["Sin", "Tri", "Saw", "Square"], "default": 0 }
+          ]
+        },
+        {
+          "id": "osc_model",
+          "label": "Model",
+          "type": "SUBMENU",
+          "submenus": [
+            { "id": "osc_model_structure", "label": "Structure", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "osc_model_brightness", "label": "Brightness", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "osc_model_damping", "label": "Damping", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 50, "unit": "%" },
+            { "id": "osc_model_accent", "label": "Accent", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 80, "unit": "%" },
+            { "id": "osc_model_exciter", "label": "Exciter", "type": "INT", "min": 0, "max": 100, "step": 1, "default": 30, "unit": "%" },
+            { "id": "osc_model_sustain", "label": "Sustain", "type": "ENUM", "options": ["Pluck", "Bow"], "default": 0 }
           ]
         }
       ]
@@ -226,11 +239,11 @@
       "icon": "icon_matrix",
       "color": "#BD00FF",
       "submenus": [
-        { "id": "mod1_src", "label": "Slot 1 Src", "type": "ENUM", "options": ["NONE", "LFO1", "LFO2", "ENV2", "VEL", "MODWHEEL", "CV1"], "default": 1 },
-        { "id": "mod1_dst", "label": "Slot 1 Dst", "type": "ENUM", "options": ["NONE", "CUTOFF", "PITCH", "PW", "DRIVE", "LFO_RATE"], "default": 1 },
+        { "id": "mod1_src", "label": "Slot 1 Src", "type": "ENUM", "options": ["NONE", "LFO1", "LFO2", "ENV2", "VEL", "MODWHEEL", "CV1", "ENV1"], "default": 1 },
+        { "id": "mod1_dst", "label": "Slot 1 Dst", "type": "ENUM", "options": ["NONE", "CUTOFF", "PITCH", "PW", "DRIVE", "LFO_RATE", "RESONANCE", "VCA"], "default": 1 },
         { "id": "mod1_amt", "label": "Slot 1 Amt", "type": "INT", "min": -100, "max": 100, "step": 5, "default": 0, "unit": "%" },
-        { "id": "mod2_src", "label": "Slot 2 Src", "type": "ENUM", "options": ["NONE", "LFO1", "LFO2", "ENV2", "VEL", "MODWHEEL", "CV1"], "default": 0 },
-        { "id": "mod2_dst", "label": "Slot 2 Dst", "type": "ENUM", "options": ["NONE", "CUTOFF", "PITCH", "PW", "DRIVE", "LFO_RATE"], "default": 0 },
+        { "id": "mod2_src", "label": "Slot 2 Src", "type": "ENUM", "options": ["NONE", "LFO1", "LFO2", "ENV2", "VEL", "MODWHEEL", "CV1", "ENV1"], "default": 0 },
+        { "id": "mod2_dst", "label": "Slot 2 Dst", "type": "ENUM", "options": ["NONE", "CUTOFF", "PITCH", "PW", "DRIVE", "LFO_RATE", "RESONANCE", "VCA"], "default": 0 },
         { "id": "mod2_amt", "label": "Slot 2 Amt", "type": "INT", "min": -100, "max": 100, "step": 5, "default": 0, "unit": "%" }
       ]
     },

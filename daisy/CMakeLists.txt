@@ -54,6 +54,7 @@ set(SOURCES
     src/filter.cpp
     src/lfo.cpp
     src/fm.cpp
+    src/model.cpp
     src/fx_chain.cpp
     src/input_manager.cpp
     src/midi.cpp

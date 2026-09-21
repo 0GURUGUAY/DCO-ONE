@@ -17,7 +17,7 @@ class SdPatternDisk {
 
     bool Read(int slot, dco::PatternRecord& record)
     {
-        if (!Mount()) return false;
+        if (slot < 1 || slot > dco::kPatchSlotCount || !Mount()) return false;
         char path[48];
         Path(slot, "dco", path);
         if (ReadFile(path, record)) return true;
@@ -27,7 +27,7 @@ class SdPatternDisk {
 
     bool Write(int slot, const dco::PatternRecord& record)
     {
-        if (!dco::ValidPattern(record) || !Mount()) return false;
+        if (slot < 1 || slot > dco::kPatchSlotCount || !dco::ValidPattern(record) || !Mount()) return false;
         char path[48], temporary[48], backup[48];
         Path(slot, "dco", path);
         Path(slot, "tmp", temporary);
@@ -60,6 +60,76 @@ class SdPatternDisk {
         }
         used_[(slot - 1) / 8] |= 1U << ((slot - 1) % 8);
         Serial.printf("[SD] Saved pattern %03d (%u bytes)\n", slot, unsigned(sizeof(record)));
+        return true;
+    }
+
+    bool Delete(int slot)
+    {
+        if (slot < 1 || slot > dco::kPatchSlotCount || !Mount()) return false;
+        for (const char* extension : {"ntmp", "nbak", "name", "tmp", "bak", "dco"})
+        {
+            char path[48];
+            Path(slot, extension, path);
+            if (SD_MMC.exists(path) && !SD_MMC.remove(path)) return Fail("delete");
+        }
+        used_[(slot - 1) / 8] &= ~(1U << ((slot - 1) % 8));
+        Serial.printf("[SD] Deleted pattern %03d\n", slot);
+        return true;
+    }
+
+    String Name(int slot)
+    {
+        if (slot < 1 || slot > dco::kPatchSlotCount || !Mount()) return String();
+        for (const char* extension : {"name", "nbak"})
+        {
+            char path[48];
+            Path(slot, extension, path);
+            File input = SD_MMC.open(path, FILE_READ);
+            if (!input) continue;
+            char text[65] = {};
+            size_t length = input.size();
+            bool ok = length > 0 && length <= 64
+                && input.read(reinterpret_cast<uint8_t*>(text), length) == length;
+            input.close();
+            if (ok) return String(text);
+        }
+        return String();
+    }
+
+    bool Rename(int slot, const String& name)
+    {
+        if (slot < 1 || slot > dco::kPatchSlotCount || !name.length() || name.length() > 64
+            || !Mount() || !(used_[(slot - 1) / 8] & (1U << ((slot - 1) % 8)))) return false;
+        for (size_t index = 0; index < name.length(); ++index)
+            if (static_cast<uint8_t>(name[index]) < 32 || name[index] == 127) return false;
+        char path[48], temporary[48], backup[48];
+        Path(slot, "name", path);
+        Path(slot, "ntmp", temporary);
+        Path(slot, "nbak", backup);
+        if (SD_MMC.exists(temporary) && !SD_MMC.remove(temporary)) return Fail("name temporary");
+        File output = SD_MMC.open(temporary, FILE_WRITE);
+        if (!output) return Fail("name open");
+        size_t written = output.print(name);
+        output.flush();
+        output.close();
+        File verify = SD_MMC.open(temporary, FILE_READ);
+        char text[65] = {};
+        bool ok = verify && verify.size() == name.length()
+            && verify.read(reinterpret_cast<uint8_t*>(text), name.length()) == name.length()
+            && name == text;
+        verify.close();
+        if (written != name.length() || !ok) return Fail("name verify");
+        bool hadPrevious = SD_MMC.exists(path);
+        if (hadPrevious)
+        {
+            if (SD_MMC.exists(backup) && !SD_MMC.remove(backup)) return Fail("name backup");
+            if (!SD_MMC.rename(path, backup)) return Fail("name backup rename");
+        }
+        if (!SD_MMC.rename(temporary, path))
+        {
+            if (hadPrevious) SD_MMC.rename(backup, path);
+            return Fail("name commit");
+        }
         return true;
     }
 

@@ -13,6 +13,7 @@
 #include "XPowersLib.h"
 #include "TouchDrvCSTXXX.hpp"
 #include "sd_patterns.h"
+#include "remote_web.h"
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
@@ -258,6 +259,12 @@ static int32_t s_mat1_amt_drawn = -1;
 static int32_t s_mat2_src_drawn = -1;
 static int32_t s_mat2_dst_drawn = -1;
 static int32_t s_mat2_amt_drawn = -1;
+static int32_t s_model_structure_drawn = -1;
+static int32_t s_model_brightness_drawn = -1;
+static int32_t s_model_damping_drawn = -1;
+static int32_t s_model_accent_drawn = -1;
+static int32_t s_model_exciter_drawn = -1;
+static int32_t s_model_sustain_drawn = -1;
 
 // Polymetric step wheel overlay, driven by "POLY,N=..,C=..,ST=..,DEG=..,PLAY=..,NOTE=.."
 // frames from the Daisy (see SendPolyState in daisy/src/main.cpp). Replaces
@@ -288,6 +295,13 @@ static int32_t s_osc_fm_amount = 0;
 static int32_t s_osc_fm_ratio = 0;
 static int32_t s_osc_fm_fine = 0;
 static int32_t s_osc_fm_wave = 0;
+static bool    s_model_valid = false;
+static int32_t s_model_structure = 50;
+static int32_t s_model_brightness = 50;
+static int32_t s_model_damping = 50;
+static int32_t s_model_accent = 80;
+static int32_t s_model_exciter = 30;
+static int32_t s_model_sustain = 0;
 
 static constexpr int kPresetSlotCount = 128;
 struct PresetState {
@@ -297,6 +311,12 @@ struct PresetState {
 };
 static PresetState s_preset = {};
 static bool s_preset_valid = false;
+
+// Cached pattern names read from the SD card .name files. s_preset_name_loaded
+// tracks slots already looked up (even when the SD lookup came back empty),
+// so a nameless preset doesn't re-open the SD card on every redraw.
+static String s_preset_names[kPresetSlotCount];
+static bool   s_preset_name_loaded[kPresetSlotCount] = {};
 
 static const int kWheelGapDeg       = 3;   // black gap between wedges, in degrees
 static const int kWheelOuterBulge   = 0;
@@ -360,6 +380,37 @@ static bool applyPresetState(const String& frame)
     s_preset = next;
     s_preset_valid = true;
     return changed;
+}
+
+// Reads a pattern name from the SD card and caches it. Called on demand
+// by the rendering code and immediately after a web rename so the display
+// reflects the new name without waiting for the next menu refresh.
+static void RefreshPresetName(int slot)
+{
+    if (slot < 1 || slot > kPresetSlotCount)
+        return;
+    s_preset_names[slot - 1] = s_sd_disk.Name(slot);
+    s_preset_name_loaded[slot - 1] = true;
+}
+
+// Public hook used by the web server after a successful rename.
+void OnPresetRenamed(int slot)
+{
+    RefreshPresetName(slot);
+}
+
+// Returns the cached name for a slot, loading it from SD if needed.
+// Falls back to "SANS NOM" / "LIBRE" when no name file exists.
+static const char* GetPresetName(int slot)
+{
+    if (slot < 1 || slot > kPresetSlotCount)
+        return "";
+    String& cached = s_preset_names[slot - 1];
+    if (!s_preset_name_loaded[slot - 1] && s_preset.used[slot - 1])
+        RefreshPresetName(slot);
+    if (cached.length() > 0)
+        return cached.c_str();
+    return s_preset.used[slot - 1] ? "SANS NOM" : "LIBRE";
 }
 
 static void applyNavPath(const String& path)
@@ -708,11 +759,19 @@ static void drawStatusHub(int cx, int cy, bool showStepCount)
     const int rootSelection = constrain(s_menu_selected[0], 0, kRootMenuCount - 1);
     const uint16_t accent = atRoot ? kRootMenu[rootSelection].color : C_PALE_PLAY;
     {
-        char presetLabel[32];
+        char presetLabel[40];
         if (s_preset_valid && s_preset.current > 0)
-            snprintf(presetLabel, sizeof(presetLabel), "N. %03d", s_preset.current);
+        {
+            const char* name = GetPresetName(s_preset.current);
+            if (name[0])
+                snprintf(presetLabel, sizeof(presetLabel), "%s", name);
+            else
+                snprintf(presetLabel, sizeof(presetLabel), "N. %03d", s_preset.current);
+        }
         else
+        {
             snprintf(presetLabel, sizeof(presetLabel), "SEQUENCE");
+        }
         drawHubText(presetLabel, cx, cy - 119, 140, &FreeSans12pt7b, accent);
     }
     if (!s_status_valid)
@@ -1278,6 +1337,7 @@ static void drawOscHub(int cx, int cy)
 {
     const MenuNode* parent = s_menu_stack[s_menu_depth];
     const bool inFm = s_menu_depth >= 2 && s_menu_stack[2]->children == kOscFmSubmenu;
+    const bool inModel = s_menu_depth >= 2 && s_menu_stack[2]->children == kOscModelSubmenu;
     if (!s_osc_valid)
     {
         drawHubText("EN ATTENTE", cx, cy - 10, 220, &FreeSans12pt7b, C_MUTED);
@@ -1286,6 +1346,7 @@ static void drawOscHub(int cx, int cy)
     const int wave = constrain(s_osc_wave, 0, kOSC_osc_waveOptionCount - 1);
     const int modWave = constrain(s_osc_fm_wave, 0, kOSC_osc_fm_modwaveOptionCount - 1);
     const bool fm = wave == 4 || inFm;
+    const bool model = wave == 5 || inModel;
     drawHubText(kOSC_osc_waveOptions[wave].label, cx, cy - 80, 220,
                 &FreeSans24pt7b, C_WHITE);
     char summary[48];
@@ -1303,6 +1364,42 @@ static void drawOscHub(int cx, int cy)
         snprintf(summary, sizeof(summary), "MOD %s%s", kOSC_osc_fm_modwaveOptions[modWave].label,
                  wave == 4 ? "" : " / FM INACTIVE");
         drawHubText(summary, cx, cy + 70, 224, &FreeSans9pt7b, C_MUTED);
+    }
+    else if (model)
+    {
+        // Illustrative decaying "plucked string" curve: amplitude decays
+        // across the box per Damping, wiggle rate scales with Brightness
+        // (NOT sample-accurate, same stylized-illustration approach as
+        // drawLfoWaveform/drawVcfHub's response curve).
+        const int halfW = 103;
+        const int halfH = 30;
+        const int x0 = cx - halfW;
+        const int x1 = cx + halfW;
+        const float dampNorm  = s_model_valid ? s_model_damping / 100.0f : 0.5f;
+        const float brightNorm = s_model_valid ? s_model_brightness / 100.0f : 0.5f;
+        const float cycles = 2.0f + brightNorm * 6.0f;
+        int prevX = x0, prevY = cy;
+        bool first = true;
+        for (int x = x0; x <= x1; x += 3)
+        {
+            float t = (float)(x - x0) / (float)(x1 - x0);
+            float decay = powf(1.0f - dampNorm * 0.85f, t * 6.0f);
+            float v = sinf(t * cycles * 2.0f * (float)PI) * decay;
+            int y = cy - (int)(v * halfH);
+            if (!first)
+                canvas->drawLine(prevX, prevY, x, y, C_PALE_OSC);
+            prevX = x;
+            prevY = y;
+            first = false;
+        }
+        canvas->drawFastHLine(x0, cy + halfH + 5, x1 - x0, C_SURFACE);
+        snprintf(summary, sizeof(summary), "STRUCT %ld%%   BRIGHT %ld%%",
+                 s_model_valid ? (long)s_model_structure : 0L, s_model_valid ? (long)s_model_brightness : 0L);
+        drawHubText(summary, cx, cy + 47, 234, &FreeSans9pt7b, C_MUTED);
+        snprintf(summary, sizeof(summary), "%s   DAMP %ld%%%s",
+                 s_model_valid && s_model_sustain ? "BOW" : "PLUCK",
+                 s_model_valid ? (long)s_model_damping : 0L, wave == 5 ? "" : " / MODEL INACTIF");
+        drawHubText(summary, cx, cy + 70, 224, &FreeSans9pt7b, C_PALE_OSC);
     }
     else
     {
@@ -1344,9 +1441,17 @@ static void drawPresetHub(int cx, int cy)
     }
     char text[64];
     if (s_preset.current > 0)
-        snprintf(text, sizeof(text), "N. %03d", s_preset.current);
+    {
+        const char* name = GetPresetName(s_preset.current);
+        if (name[0])
+            snprintf(text, sizeof(text), "%s", name);
+        else
+            snprintf(text, sizeof(text), "N. %03d", s_preset.current);
+    }
     else
+    {
         snprintf(text, sizeof(text), "COURANT");
+    }
     drawHubText(text, cx, cy - 82, 220, &FreeSans24pt7b, C_WHITE);
     drawHubText(s_preset.error ? "ECHEC SD" : s_preset.busy ? "TRANSFERT SD"
                 : !s_preset.sdReady ? "SD ABSENTE" : "PATTERNS SD",
@@ -1403,7 +1508,7 @@ static void drawPresetList()
             canvas->fillRect(78, top - 5, 310, 33, C_SURFACE);
             canvas->fillRect(78, top - 5, 3, 33, C_PALE_PRESETS);
         }
-        snprintf(text, sizeof(text), "%03d  %s", slot, used ? "SANS NOM" : "LIBRE");
+        snprintf(text, sizeof(text), "%03d  %s", slot, GetPresetName(slot));
         drawHubText(text, cx, top, 290, used ? &FreeSansBold12pt7b : &FreeSans12pt7b,
                     used ? C_WHITE : 0xC618);
     }
@@ -1738,19 +1843,19 @@ void initDisplay()
     
     int16_t x1, y1;
     uint16_t w, h;
-    const char *msg = "DCO-ONE";
+    const char *msg = "DCO-ONE V1";
     canvas->getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
     canvas->setCursor((LCD_WIDTH - w) / 2, 100 - y1);
     canvas->println(msg);
     
     canvas->setFont(&FreeSans12pt7b);
-    const char *subtitle = "Phase 4 - Matrice";
+    const char *subtitle = "Phase 5 - Modeling";
     canvas->getTextBounds(subtitle, 0, 0, &x1, &y1, &w, &h);
     canvas->setCursor((LCD_WIDTH - w) / 2, 150 - y1);
     canvas->setTextColor(C_CYAN);
     canvas->println(subtitle);
     
-    const char *status = "Waiting for MENU encoder...";
+    const char *status = "Waiting for Daisy...";
     canvas->getTextBounds(status, 0, 0, &x1, &y1, &w, &h);
     canvas->setCursor((LCD_WIDTH - w) / 2, 200 - y1);
     canvas->setTextColor(C_WHITE);
@@ -1760,7 +1865,7 @@ void initDisplay()
     const char *copyr1 = "by Max Patissier";
     canvas->getTextBounds(copyr1, 0, 0, &x1, &y1, &w, &h);
     canvas->setCursor((LCD_WIDTH - w) / 2, 300 - y1);
-    canvas->setTextColor(C_RED);
+    canvas->setTextColor(C_ORANGE);
     canvas->println(copyr1);
     
     canvas->flush();
@@ -1851,6 +1956,7 @@ void setup()
     // Draw the initial menu state (root wheel, first item highlighted)
     drawCurrentLevel();
     
+    s_remote_web.Begin();
     Serial.println("[SETUP] Initialization complete\n");
 }
 
@@ -1886,6 +1992,7 @@ void loop()
 
         if (c == '\n')
         {
+            s_remote_web.Observe(s_serial_buffer.c_str());
             if (s_serial_buffer.startsWith("SDC,"))
             {
                 s_sd_server.Receive(s_serial_buffer.c_str());
@@ -2160,6 +2267,34 @@ void loop()
                     needsWheelRedraw = true;
                 }
             }
+            else if (s_serial_buffer.startsWith("MDL,"))
+            {
+                String rest = s_serial_buffer.substring(4);
+                s_model_structure  = parseLongField(rest, "ST=");
+                s_model_brightness = parseLongField(rest, "BR=");
+                s_model_damping    = parseLongField(rest, "DM=");
+                s_model_accent     = parseLongField(rest, "AC=");
+                s_model_exciter    = parseLongField(rest, "EX=");
+                s_model_sustain    = parseLongField(rest, "SU=");
+                s_model_valid = true;
+                bool modelHubChanged = s_model_structure != s_model_structure_drawn
+                                    || s_model_brightness != s_model_brightness_drawn
+                                    || s_model_damping != s_model_damping_drawn
+                                    || s_model_accent != s_model_accent_drawn
+                                    || s_model_exciter != s_model_exciter_drawn
+                                    || s_model_sustain != s_model_sustain_drawn;
+                bool currentIsOsc = (s_menu_depth >= 1 && s_menu_stack[1]->children == kOscSubmenu);
+                if (currentIsOsc && modelHubChanged && !s_editing && !s_poly_active)
+                {
+                    s_model_structure_drawn  = s_model_structure;
+                    s_model_brightness_drawn = s_model_brightness;
+                    s_model_damping_drawn    = s_model_damping;
+                    s_model_accent_drawn     = s_model_accent;
+                    s_model_exciter_drawn    = s_model_exciter;
+                    s_model_sustain_drawn    = s_model_sustain;
+                    needsWheelRedraw = true;
+                }
+            }
             else if (s_serial_buffer.startsWith("EDIT,"))
             {
                 s_preset.mode = 0;
@@ -2336,6 +2471,11 @@ void loop()
         }
     }
     s_touch_was_pressed = pressed;
+
+    // Serviced last: handleClient() can block for an HTTP request, so it must
+    // never delay draining the Daisy UART / redrawing the playhead (the cause
+    // of the poly wheel's audio/display step lag once remote_web was added).
+    s_remote_web.Tick();
 
     delay(20);
 }

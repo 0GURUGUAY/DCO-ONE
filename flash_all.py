@@ -82,6 +82,10 @@ def build_esp32():
         raise RuntimeError("PlatformIO is not installed or not in PATH")
 
     pio = which("pio") or "platformio"
+    npm = which("npm")
+    if not npm:
+        raise RuntimeError("npm is required to build the embedded web application")
+    run([npm, "--prefix", str(ESP32_DIR / "web"), "run", "build"], cwd=ROOT)
     run([pio, "run"], cwd=ESP32_DIR)
     print(f"{GREEN}✓ ESP32-S3 build complete{NC}")
 
@@ -167,13 +171,12 @@ def main():
         "--esp32", action="store_true", help="ESP32-S3 only"
     )
     parser.add_argument(
-        "--no-bridge", action="store_true", help="Do not start the serial bridge after flashing"
+        "--no-bridge", action="store_true", help=argparse.SUPPRESS
     )
     args = parser.parse_args()
 
     do_both = not args.daisy and not args.esp32
     build_only = args.build
-    start_bridge = not build_only and not args.no_bridge
 
     try:
         if do_both or args.daisy:
@@ -190,14 +193,7 @@ def main():
         section("Done")
         print(f"{GREEN}🎵 All operations completed successfully!{NC}")
 
-        if start_bridge:
-            section("Starting serial bridge")
-            bridge_script = ROOT / "combined_bridge.py"
-            if bridge_script.exists():
-                print(f"{CYAN}$ python3 {bridge_script}{NC}\n")
-                subprocess.run([sys.executable, str(bridge_script)], cwd=ROOT)
-            else:
-                print(f"{YELLOW}⚠️  Bridge script not found: {bridge_script}{NC}")
+        print("Display: direct UART. MIDI: native USB. No serial bridge required.")
     except RuntimeError as e:
         print(f"\n{RED}❌ Error: {e}{NC}")
         sys.exit(1)

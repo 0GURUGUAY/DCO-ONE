@@ -1,5 +1,9 @@
 # 🎵 WAVEFORM DISPLAY - IMPLEMENTATION COMPLETE
 
+> Historical implementation notes. Since the UART migration, display frames travel
+> directly between the boards. The USB bridge scripts mentioned below were removed;
+> use the current wiring and build instructions in WIFI_REMOTE.md.
+
 ## ✨ What's New
 
 Your DCO-ONE now displays a **live waveform** on the ESP32 screen center, replacing the small icon that was there before.

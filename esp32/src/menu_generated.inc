@@ -87,6 +87,7 @@ static const MenuNode kOSC_osc_waveOptions[] = {
     { "Tri", 0, nullptr, 0 },
     { "Sin", 0, nullptr, 0 },
     { "FM", 0, nullptr, 0 },
+    { "Model", 0, nullptr, 0 },
 };
 static const int kOSC_osc_waveOptionCount = sizeof(kOSC_osc_waveOptions) / sizeof(kOSC_osc_waveOptions[0]);
 
@@ -109,6 +110,24 @@ static const MenuNode kOscFmSubmenu[] = {
 static const int kOscFmSubmenuCount = sizeof(kOscFmSubmenu) / sizeof(kOscFmSubmenu[0]);
 
 
+static const MenuNode kOSC_osc_model_sustainOptions[] = {
+    { "Pluck", 0, nullptr, 0 },
+    { "Bow", 0, nullptr, 0 },
+};
+static const int kOSC_osc_model_sustainOptionCount = sizeof(kOSC_osc_model_sustainOptions) / sizeof(kOSC_osc_model_sustainOptions[0]);
+
+
+static const MenuNode kOscModelSubmenu[] = {
+    { "Structure", 0, nullptr, 0 },
+    { "Brightness", 0, nullptr, 0 },
+    { "Damping", 0, nullptr, 0 },
+    { "Accent", 0, nullptr, 0 },
+    { "Exciter", 0, nullptr, 0 },
+    { "Sustain", 0, kOSC_osc_model_sustainOptions, kOSC_osc_model_sustainOptionCount },
+};
+static const int kOscModelSubmenuCount = sizeof(kOscModelSubmenu) / sizeof(kOscModelSubmenu[0]);
+
+
 static const MenuNode kOscSubmenu[] = {
     { "Form", 0, kOSC_osc_waveOptions, kOSC_osc_waveOptionCount },
     { "Coarse", 0, nullptr, 0 },
@@ -117,6 +136,7 @@ static const MenuNode kOscSubmenu[] = {
     { "Sub-Osc", 0, nullptr, 0 },
     { "Hard", 0, nullptr, 0 },
     { "FM", 0, kOscFmSubmenu, kOscFmSubmenuCount },
+    { "Model", 0, kOscModelSubmenu, kOscModelSubmenuCount },
 };
 static const int kOscSubmenuCount = sizeof(kOscSubmenu) / sizeof(kOscSubmenu[0]);
 
@@ -249,6 +269,7 @@ static const MenuNode kMATRIX_mod1_srcOptions[] = {
     { "VEL", 0, nullptr, 0 },
     { "MODWHEEL", 0, nullptr, 0 },
     { "CV1", 0, nullptr, 0 },
+    { "ENV1", 0, nullptr, 0 },
 };
 static const int kMATRIX_mod1_srcOptionCount = sizeof(kMATRIX_mod1_srcOptions) / sizeof(kMATRIX_mod1_srcOptions[0]);
 
@@ -260,6 +281,8 @@ static const MenuNode kMATRIX_mod1_dstOptions[] = {
     { "PW", 0, nullptr, 0 },
     { "DRIVE", 0, nullptr, 0 },
     { "LFO_RATE", 0, nullptr, 0 },
+    { "RESONANCE", 0, nullptr, 0 },
+    { "VCA", 0, nullptr, 0 },
 };
 static const int kMATRIX_mod1_dstOptionCount = sizeof(kMATRIX_mod1_dstOptions) / sizeof(kMATRIX_mod1_dstOptions[0]);
 
@@ -272,6 +295,7 @@ static const MenuNode kMATRIX_mod2_srcOptions[] = {
     { "VEL", 0, nullptr, 0 },
     { "MODWHEEL", 0, nullptr, 0 },
     { "CV1", 0, nullptr, 0 },
+    { "ENV1", 0, nullptr, 0 },
 };
 static const int kMATRIX_mod2_srcOptionCount = sizeof(kMATRIX_mod2_srcOptions) / sizeof(kMATRIX_mod2_srcOptions[0]);
 
@@ -283,6 +307,8 @@ static const MenuNode kMATRIX_mod2_dstOptions[] = {
     { "PW", 0, nullptr, 0 },
     { "DRIVE", 0, nullptr, 0 },
     { "LFO_RATE", 0, nullptr, 0 },
+    { "RESONANCE", 0, nullptr, 0 },
+    { "VCA", 0, nullptr, 0 },
 };
 static const int kMATRIX_mod2_dstOptionCount = sizeof(kMATRIX_mod2_dstOptions) / sizeof(kMATRIX_mod2_dstOptions[0]);
 

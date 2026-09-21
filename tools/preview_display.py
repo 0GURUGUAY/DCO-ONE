@@ -6,7 +6,6 @@ Outputs PNG previews in build/display-preview without connecting to hardware.
 """
 
 from pathlib import Path
-import ast
 import struct
 import subprocess
 import tempfile
@@ -403,22 +402,6 @@ def write_png(path, pixels):
 
 
 def main():
-    for bridge_name in ("combined_bridge.py", "usb_bridge.py"):
-        tree = ast.parse((ROOT / bridge_name).read_text())
-        relay_test = next(
-            node.value for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == "is_control_msg" for target in node.targets)
-        )
-        predicate = compile(ast.Expression(relay_test), bridge_name, "eval")
-        frame = "OSC,W=4,A=100,R=32,F=-50,M=3"
-        assert len((frame + "\r\n").encode("ascii")) < 128
-        assert eval(predicate, {"__builtins__": {}}, {"text": frame})
-        frame = "PRST,C=128,M=2,S=128,U=" + "F" * 32 + ",W=4,B=200,R=11,G=7,F=4,H=20000,N=32,E=1"
-        assert len((frame + "\r\n").encode("ascii")) < 128
-        assert eval(predicate, {"__builtins__": {}}, {"text": frame})
-        assert not eval(predicate, {"__builtins__": {}}, {"text": "UNKNOWN,W=4"})
-    print("Both USB bridges accept OSC and PRST frames; worst-case frames fit the logger.")
     source = (ROOT / "esp32/src/main.cpp").read_text()
     rendering = source[source.index("// Color definitions"):source.index("void initDisplay()")]
     daisy = (ROOT / "daisy/src/main.cpp").read_text()

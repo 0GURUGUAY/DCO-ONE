@@ -10,7 +10,7 @@ constexpr size_t kPatternChunk = 64;
 
 class PatternClient {
   public:
-    enum class Operation { None, List, Load, Save };
+    enum class Operation { None, List, Load, Save, Delete };
     PatternRecord record;
     uint8_t used[16] = {};
     bool available = false;
@@ -64,6 +64,10 @@ class PatternClient {
             if (ok) memcpy(used, bitmap, sizeof(used));
             Finish(ok);
         }
+        else if (operation_ == Operation::Delete)
+        {
+            Finish(strcmp(reply, "OK") == 0);
+        }
         else if (operation_ == Operation::Load)
         {
             size_t count = ChunkSize();
@@ -110,6 +114,8 @@ class PatternClient {
         if (resultOperation_ == Operation::List) available = success;
         if (resultOperation_ == Operation::Save && success)
             used[(slot_ - 1) / 8] |= 1U << ((slot_ - 1) % 8);
+        if (resultOperation_ == Operation::Delete && success)
+            used[(slot_ - 1) / 8] &= ~(1U << ((slot_ - 1) % 8));
     }
     void Request(uint32_t now)
     {
@@ -118,6 +124,7 @@ class PatternClient {
         ++requestId_;
         const char* command = "LIST";
         if (operation_ == Operation::Load) command = "GET";
+        if (operation_ == Operation::Delete) command = "DELETE";
         if (operation_ == Operation::Save)
         {
             command = stage_ == 0 ? "BEGIN" : stage_ == 1 ? "PUT" : "COMMIT";
@@ -158,7 +165,12 @@ class PatternServer {
         }
         else if (slot >= 1 && slot <= kPatchSlotCount)
         {
-            if (strcmp(command, "BEGIN") == 0 && offset == 0 && !*payload)
+            if (strcmp(command, "DELETE") == 0 && offset == 0 && !*payload)
+            {
+                writeSlot_ = readSlot_ = 0;
+                strcpy(reply, disk_.Delete(slot) ? "OK" : "ERR,SD");
+            }
+            else if (strcmp(command, "BEGIN") == 0 && offset == 0 && !*payload)
             {
                 writeSlot_ = slot;
                 readSlot_ = 0;

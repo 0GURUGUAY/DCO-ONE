@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f4f5f3">
+<title>DCO-ONE | Synth&eacute;tiseur</title>
+<style>
+:root{--bg:#f4f5f3;--ink:#202725;--muted:#5d6862;--line:#cdd3cd;--off:#7e8781;--note:#eed24e;--arp:#5ed6e5;--chord:#85db97;--fixed:#f2a7c8;--accent:#176a4c;--danger:#aa293c;font-family:"Avenir Next","Trebuchet MS",sans-serif;color:var(--ink);background:var(--bg);letter-spacing:0}
+*{box-sizing:border-box}body{margin:0;background-image:linear-gradient(#e6eae455 1px,transparent 1px);background-size:100% 32px}button,input,select{font:inherit;color:inherit}button{cursor:pointer;touch-action:manipulation}button:disabled{cursor:not-allowed;opacity:.42}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:3px}button{border:1px solid var(--line);border-radius:6px;min-height:44px;background:#fff;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:9px 14px}button:hover:not(:disabled){border-color:var(--ink)}svg{width:19px;height:19px;flex-shrink:0;stroke-width:1.7}h1,h2,p{margin:0}h1{font-size:25px;font-weight:700}h2{font-size:20px}header{border-bottom:1px solid var(--ink);background:var(--bg)}.top{max-width:1140px;margin:auto;padding:22px 28px;display:flex;gap:16px;justify-content:space-between;align-items:center}.brand small{display:block;font-size:11px;letter-spacing:2px;margin-top:4px;color:var(--muted)}.connection{display:flex;gap:7px;align-items:center;font-size:12px;max-width:155px}.connection[data-online="true"]{color:var(--accent)}main{display:grid;grid-template-columns:280px minmax(0,1fr);max-width:1140px;margin:auto;min-height:calc(100vh - 100px)}aside{padding:28px 22px 30px 28px;border-right:1px solid var(--line)}.section-title{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:20px}.section-title h2{font-size:15px}.icon{width:44px;height:44px;flex-shrink:0;padding:10px}.count,.eyebrow{color:var(--muted);font-size:12px}.patterns{display:flex;flex-direction:column;gap:1px}.pattern{display:flex;gap:3px;border-bottom:1px solid var(--line);padding:8px 0;align-items:center;min-width:0}.pattern.active{border-left:3px solid var(--accent);padding-left:7px}.pattern .load{flex:1;min-width:0;background:transparent;border:0;padding:8px 3px;justify-content:flex-start;text-align:left;font-size:14px}.pattern .load span{min-width:0;overflow-wrap:anywhere}.pattern .load small{display:block;font:11px monospace;color:var(--muted);margin-bottom:4px}.pattern .icon{width:36px;padding:7px;background:transparent;border-color:transparent}.empty{color:var(--muted);font-size:14px;padding:12px 0;line-height:1.5}.editor{padding:30px 32px;min-width:0}.session{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.session h2{font-size:24px;overflow-wrap:anywhere;line-height:1.25;margin-top:6px}.session>div:first-child{min-width:0}.tempo{text-align:right;white-space:nowrap;font:28px "Menlo",monospace}.tempo small{display:block;font:10px "Avenir Next",sans-serif;color:var(--muted);margin-top:4px}.transport{display:flex;flex-wrap:wrap;gap:8px;margin:23px 0 10px}.primary{background:var(--ink);color:#fff;border-color:var(--ink)}.transport .save{margin-left:auto}.message{min-height:40px;font-size:13px;color:var(--muted);line-height:1.45;padding:7px 0;overflow-wrap:anywhere}.message.error{color:var(--danger)}.sequence-top{border-top:1px solid var(--line);padding-top:24px;margin-top:7px;display:flex;justify-content:space-between;align-items:center}.sequence-top h2{font-size:15px}.steps{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px 5px;margin:20px 0 26px}.step{flex-direction:column;border:1px solid transparent;background:transparent;gap:6px;min-width:0;height:76px;padding:7px 0;font:11px "Menlo",monospace;position:relative}.dot{width:34px;height:34px;border-radius:50%;background:var(--off);border:1px solid #20272544;display:block}.step[aria-pressed="true"]{border-color:var(--ink);background:#fff}.step.playing .dot{outline:3px solid var(--accent);outline-offset:3px}.step.inactive{opacity:.25}.step.playing:after{content:"";width:4px;height:4px;background:var(--accent);border-radius:50%;position:absolute;bottom:3px}.parameters{border-top:1px solid var(--line);padding-top:20px}.parameters h2{font-size:15px;margin-bottom:16px}.modes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}.mode{display:flex;flex-direction:column;gap:7px;background:transparent;font-size:12px;padding:10px 2px;min-width:0}.mode .dot{width:19px;height:19px}.mode[aria-pressed="true"]{background:white;border-color:var(--ink);box-shadow:inset 0 -2px 0 var(--ink)}.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:8px}input,select{background:#fff;border:1px solid var(--line);border-radius:4px;padding:11px;width:100%;min-height:44px;min-width:0;font-size:16px}dialog{border:1px solid var(--line);border-radius:8px;padding:25px;width:min(420px,calc(100% - 32px));color:var(--ink);background:var(--bg)}dialog::backdrop{background:#15241d80}dialog h2{margin-bottom:23px}dialog .actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:24px}.danger{color:var(--danger)}footer{color:var(--muted);font:11px monospace;margin-top:30px;border-top:1px solid var(--line);padding-top:12px;display:flex;justify-content:space-between;gap:10px}@media(max-width:760px){.top{padding:18px 18px}h1{font-size:23px}main{display:flex;flex-direction:column}.editor{order:0;padding:24px 18px}aside{order:1;padding:24px 18px;border-right:0;border-top:1px solid var(--ink)}.steps{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.step{height:64px;flex-direction:row;gap:8px}.dot{width:30px;height:30px}.session h2{font-size:22px}.mode{font-size:11px}.transport button{padding:9px 11px}.tempo{font-size:25px}}@media(prefers-reduced-motion:no-preference){main{animation:appear .3s ease-out}@keyframes appear{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}}
+</style>
+<style>
+[hidden]{display:none!important}.brand small{letter-spacing:0}.tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin:0 0 24px;padding-bottom:12px}.tabs button{flex:1;min-width:0;padding:9px 8px;background:transparent}.tabs button[aria-selected="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}.editor{min-width:0}.synth-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:30px 24px}.synth-block{min-width:0;border-top:3px solid var(--block-color);padding-top:14px}.synth-block h2{font-size:18px;margin-bottom:12px}.synth-block canvas{display:block;width:100%;height:68px;margin-bottom:14px;background:#e6ebe8}.synth-fields{display:grid;gap:14px}.synth-field{display:grid;gap:6px;min-width:0}.synth-field>label{font-size:12px;color:var(--muted)}.synth-inputs{display:flex;align-items:center;gap:10px;min-width:0}.synth-inputs input[type=range]{flex:1;min-width:40px;width:100%;padding:0;accent-color:var(--accent);height:32px}.synth-inputs input[type=number]{width:90px;min-width:0;text-align:right;flex-shrink:0;padding:9px 6px}.synth-inputs select{width:100%;min-width:0;height:44px;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.synth-inputs .unit{width:34px;flex-shrink:0;font-size:11px;color:var(--muted)}.matrix-list{display:grid;gap:0}.route{display:grid;grid-template-columns:48px minmax(100px,1fr) minmax(130px,1.3fr) minmax(180px,1.5fr);gap:14px;border-bottom:1px solid var(--line);padding:18px 0;align-items:end}.route-toggle{height:44px;display:flex;align-items:center;gap:5px;font-size:12px}.route-toggle input{width:18px;height:18px;accent-color:var(--accent)}.route[data-active="true"]{border-left:3px solid var(--accent);padding-left:8px}.route .synth-inputs input[type=number]{width:65px}.route .unit{width:auto}.matrix-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:12px}.matrix-heading h2{font-size:18px}.synth-state{font-size:12px;color:var(--muted);margin:0 0 18px}.top,main{max-width:1380px}input,select{max-width:100%}
+@media(max-width:1100px){.route{grid-template-columns:48px minmax(90px,1fr) minmax(130px,1.3fr)}.route>.synth-field:last-child{grid-column:2 / -1}.synth-grid{gap:24px 18px}}
+@media(max-width:600px){.tabs{gap:3px}.tabs button{font-size:12px;gap:5px}.tabs svg{width:16px}.synth-grid{grid-template-columns:minmax(0,1fr)}.route{gap:10px;grid-template-columns:38px minmax(80px,1fr) minmax(110px,1.2fr)}.route-toggle{flex-direction:column;justify-content:center;gap:3px}.matrix-heading h2{font-size:16px}.synth-inputs input[type=number]{width:85px}}
+</style>
+</head>
+<body>
+<header><div class="top"><div class="brand"><h1>DCO-ONE</h1><small>SYNTH / REMOTE</small></div><div id="connection" class="connection" role="status"><i data-lucide="wifi"></i><span id="connectionText">Connexion...</span></div></div></header>
+<main>
+<aside><div class="section-title"><h2>Biblioth&egrave;que <span id="count" class="count"></span></h2><button id="refresh" class="icon" title="Actualiser les patterns" aria-label="Actualiser les patterns"><i data-lucide="refresh-cw"></i></button></div><div id="patterns" class="patterns"></div><p id="libraryStatus" class="empty">Lecture de la carte SD...</p></aside>
+<section class="editor" aria-label="Sequenceur">
+<div class="session"><div><p id="slot" class="eyebrow">SESSION</p><h2 id="currentName">En attente du synth&eacute;tiseur</h2></div><div class="tempo"><span id="bpm">---</span><small>BPM</small></div></div>
+<div class="transport"><button id="play" class="primary" data-write><i data-lucide="play"></i>Jouer</button><button id="stop" data-write><i data-lucide="square"></i>Arr&ecirc;ter</button><button id="save" class="save" data-write><i data-lucide="save"></i>Enregistrer</button></div>
+<p id="message" class="message" role="status" aria-live="polite"></p>
+<div class="tabs" role="tablist" aria-label="Editeur">
+<button id="sequenceTab" role="tab" aria-selected="true" aria-controls="sequencePanel" data-panel="sequencePanel"><i data-lucide="list-music"></i>S&eacute;quence</button>
+<button id="synthTab" role="tab" aria-selected="false" aria-controls="synthPanel" data-panel="synthPanel" tabindex="-1"><i data-lucide="sliders-horizontal"></i>Synth&egrave;se</button>
+<button id="matrixTab" role="tab" aria-selected="false" aria-controls="matrixPanel" data-panel="matrixPanel" tabindex="-1"><i data-lucide="workflow"></i>Matrice</button>
+</div>
+<div id="sequencePanel" role="tabpanel" aria-labelledby="sequenceTab">
+<div class="sequence-top"><h2>Pastilles</h2><span id="sequenceStatus" class="eyebrow">-- PAS</span></div>
+<div id="steps" class="steps" role="group" aria-label="Pastilles du sequenceur"></div>
+<div class="parameters"><h2 id="selectedStep">Pas 01</h2><div id="modes" class="modes" role="group" aria-label="Etat du pas"></div>
+<div class="fields"><label>Degr&eacute;<input id="degree" type="number" min="-14" max="14" step="1" value="0" data-write></label><label>Transposition fixe<input id="transpose" type="number" min="-24" max="24" step="1" value="0" data-write></label></div></div>
+</div>
+<div id="synthPanel" role="tabpanel" aria-labelledby="synthTab" hidden><p class="synth-state" data-synth-state></p><div id="synthControls" class="synth-grid"></div></div>
+<div id="matrixPanel" role="tabpanel" aria-labelledby="matrixTab" hidden><div class="matrix-heading"><h2>Matrice de modulation</h2><span class="eyebrow">8 ROUTAGES</span></div><p class="synth-state" data-synth-state></p><div id="matrixControls" class="matrix-list"></div></div>
+<footer><span id="transportStatus">HORS LIGNE</span><span>SD / 128 PATTERNS</span></footer>
+</section>
+</main>
+<dialog id="renameDialog"><form id="renameForm"><h2>Nom du pattern</h2><label>Nom<input id="patternName" autocomplete="off" maxlength="64" required></label><div class="actions"><button type="button" data-close="renameDialog">Annuler</button><button class="primary" type="submit"><i data-lucide="check"></i>Renommer</button></div></form></dialog>
+<dialog id="saveDialog"><form id="saveForm"><h2>Enregistrer le pattern</h2><label>Emplacement<select id="saveSlot"></select></label><div class="actions"><button type="button" data-close="saveDialog">Annuler</button><button class="primary" type="submit"><i data-lucide="save"></i>Enregistrer</button></div></form></dialog>
+<script type="module">
+import { createIcons, Wifi, Play, Square, Save, Trash2, RefreshCw, Pencil, Check, ListMusic, SlidersHorizontal, Workflow } from 'lucide';
+const icons = { Wifi, Play, Square, Save, Trash2, RefreshCw, Pencil, Check, ListMusic, SlidersHorizontal, Workflow };
+const synthDefinitions = __SYNTH_DEFINITIONS__;
+const element = id => document.getElementById(id);
+const colors = ['var(--off)', 'var(--note)', 'var(--arp)', 'var(--chord)', 'var(--fixed)'];
+const labels = ['Off', 'Note', 'Arp\u00e8ge', 'Accord', 'Fixe'];
+let snapshot = null, library = [], selected = 0, working = false, dirty = false, online = false, renameSlot = 0, token = '';
+let outstanding = null;
+const number = value => String(value).padStart(2, '0');
+const nameOf = slot => library.find(pattern => pattern.slot === slot)?.name || `Pattern ${String(slot).padStart(3, '0')}`;
+function notice(text, error = false) { element('message').textContent = text; element('message').classList.toggle('error', error); }
+async function request(path, options = {}) {
+  const response = await fetch(path, { cache: 'no-store', signal: AbortSignal.timeout(5000), ...options });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Erreur HTTP ${response.status}`);
+  return data;
+}
+function render() {
+  element('connection').dataset.online = String(online);
+  element('connectionText').textContent = online ? 'Synth\u00e9tiseur connect\u00e9' : 'Daisy hors ligne';
+  document.querySelectorAll('[data-write]').forEach(control => { control.disabled = !online || working || snapshot?.busy; });
+  element('play').disabled = !online || working || snapshot?.busy;
+  if (!snapshot) return;
+  element('slot').textContent = snapshot.slot ? `PATTERN ${String(snapshot.slot).padStart(3, '0')}` : 'SESSION LIBRE';
+  element('currentName').textContent = snapshot.slot ? nameOf(snapshot.slot) : 'Non assign\u00e9';
+  element('bpm').textContent = snapshot.bpm;
+  element('sequenceStatus').textContent = `${snapshot.count} PAS`;
+  element('transportStatus').textContent = !online ? 'HORS LIGNE' : snapshot.playing ? 'LECTURE' : 'ARR\u00caT';
+  selected = Math.min(selected, snapshot.count - 1);
+  document.querySelectorAll('.step').forEach((button, index) => {
+    const step = snapshot.steps[index];
+    button.querySelector('.dot').style.background = colors[step.state];
+    button.classList.toggle('playing', online && snapshot.playing && snapshot.head === index);
+    button.classList.toggle('inactive', index >= snapshot.count);
+    button.setAttribute('aria-pressed', String(index === selected));
+    button.setAttribute('aria-label', `Pas ${index + 1}, ${labels[step.state]}`);
+    button.disabled = index >= snapshot.count;
+  });
+  const step = snapshot.steps[selected];
+  element('selectedStep').textContent = `Pas ${number(selected + 1)}`;
+  document.querySelectorAll('.mode').forEach((button, index) => button.setAttribute('aria-pressed', String(index === step.state)));
+  if (document.activeElement !== element('degree')) element('degree').value = step.degree;
+  if (document.activeElement !== element('transpose')) element('transpose').value = step.transpose;
+  element('transpose').disabled ||= step.state !== 4;
+  document.querySelectorAll('.pattern').forEach(row => row.classList.toggle('active', Number(row.dataset.slot) === snapshot.slot));
+  renderSynth();
+}
+const synthFields = [], routeToggles = [], lastSources = Array(8).fill(1);
+const sourceNames = ['Aucune', 'LFO1', 'LFO2', 'ENV2', 'VEL (indisponible)', 'Modwheel (indisponible)', 'CV1 (indisponible)', 'ENV1'];
+const destinationNames = ['Aucune', 'VCF : cutoff', 'VCO : hauteur', 'VCO : largeur', 'VCF : drive', 'LFO1 : vitesse', 'VCF : r\u00e9sonance', 'VCA : volume'];
+function parameterField(parent, group, parameter, definition) {
+  const field = document.createElement('div'); field.className = 'synth-field';
+  const label = document.createElement('label'); label.textContent = definition.label;
+  const inputs = document.createElement('div'); inputs.className = 'synth-inputs';
+  const control = document.createElement(definition.options ? 'select' : 'input');
+  control.id = `param-${group}-${parameter}`; control.dataset.write = ''; control.dataset.synth = '';
+  label.htmlFor = control.id;
+  let slider = null;
+  if (definition.options) {
+    definition.options.forEach((name, value) => {
+      const option = document.createElement('option'); option.value = value; option.textContent = name;
+      option.disabled = group === 3 && parameter % 3 === 0 && ![0, 1, 2, 3, 7].includes(value);
+      control.append(option);
+    });
+  } else {
+    control.type = 'number'; control.min = definition.min; control.max = definition.max; control.step = 1;
+    slider = document.createElement('input'); slider.type = 'range'; slider.min = definition.min; slider.max = definition.max; slider.step = 1;
+    slider.dataset.write = ''; slider.dataset.synth = ''; slider.setAttribute('aria-label', definition.label);
+    slider.addEventListener('input', () => { control.value = slider.value; });
+    slider.addEventListener('change', () => editParameter(group, parameter, Number(slider.value)));
+    inputs.append(slider);
+  }
+  control.addEventListener('change', () => {
+    if (control.value !== '' && control.reportValidity()) editParameter(group, parameter, Number(control.value));
+  });
+  inputs.append(control);
+  if (definition.unit) { const unit = document.createElement('span'); unit.className = 'unit'; unit.textContent = definition.unit; inputs.append(unit); }
+  field.append(label, inputs); parent.append(field);
+  synthFields.push({ group, parameter, control, slider, field });
+}
+for (const [title, group, start, count, color] of [
+  ['VCO', 0, 0, 10, '#bd613e'], ['VCF', 1, 0, 6, '#167e91'],
+  ['LFO1', 2, 0, 5, '#467754'], ['LFO2', 2, 5, 5, '#ae4971'],
+  ['ENV1 : Amplitude', 4, 0, 4, '#32779b'], ['ENV2 : Modulation', 4, 4, 4, '#8c6541']
+]) {
+  const block = document.createElement('section'); block.className = 'synth-block'; block.style.setProperty('--block-color', color);
+  const heading = document.createElement('h2'); heading.textContent = title; block.append(heading);
+  if (group !== 1) {
+    const canvas = document.createElement('canvas'); canvas.width = 480; canvas.height = 100;
+    canvas.dataset.waveGroup = group; canvas.dataset.waveParameter = start; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', `Forme ${title}`); block.append(canvas);
+  }
+  const fields = document.createElement('div'); fields.className = 'synth-fields'; block.append(fields);
+  synthDefinitions[group].slice(start, start + count).forEach((definition, index) => {
+    const label = group === 0 && index >= 6 ? `FM : ${definition.label}` : definition.label;
+    parameterField(fields, group, start + index, { ...definition, label });
+  });
+  element('synthControls').append(block);
+}
+for (let slot = 0; slot < 8; ++slot) {
+  const row = document.createElement('div'); row.className = 'route';
+  const label = document.createElement('label'); label.className = 'route-toggle'; label.append(document.createTextNode(number(slot + 1)));
+  const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.dataset.write = ''; toggle.dataset.synth = '';
+  toggle.setAttribute('aria-label', `Activer routage ${slot + 1}`);
+  toggle.addEventListener('change', () => editParameter(3, slot * 3, toggle.checked ? lastSources[slot] : 0));
+  label.append(toggle); row.append(label); routeToggles.push({ toggle, row });
+  parameterField(row, 3, slot * 3, { label: 'Source', options: sourceNames });
+  parameterField(row, 3, slot * 3 + 1, { label: 'Destination', options: destinationNames });
+  parameterField(row, 3, slot * 3 + 2, { label: 'Intensit\u00e9', min: -100, max: 100, unit: '%' });
+  element('matrixControls').append(row);
+}
+function renderSynth(force = false) {
+  const ready = online && snapshot?.parametersReady && snapshot.parameters?.length === 5;
+  document.querySelectorAll('[data-synth]').forEach(control => { control.disabled = !ready || working || snapshot?.busy; });
+  document.querySelectorAll('[data-synth-state]').forEach(label => { label.textContent = ready ? '' : 'Param\u00e8tres indisponibles'; });
+  if (!ready) return;
+  for (const { group, parameter, control, slider, field } of synthFields) {
+    if (!force && field.contains(document.activeElement)) continue;
+    const value = snapshot.parameters[group][parameter]; control.value = value;
+    if (slider) slider.value = value;
+  }
+  routeToggles.forEach(({ toggle, row }, slot) => {
+    const source = snapshot.parameters[3][slot * 3];
+    if (!working) toggle.checked = source !== 0;
+    row.dataset.active = String(toggle.checked);
+    if ([1, 2, 3, 7].includes(source)) lastSources[slot] = source;
+  });
+  document.querySelectorAll('canvas[data-wave-group]').forEach(canvas => {
+    const group = Number(canvas.dataset.waveGroup), parameter = Number(canvas.dataset.waveParameter);
+    const shape = snapshot.parameters[group][parameter];
+    const context = canvas.getContext('2d'); context.clearRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = '#b6c5bd'; context.lineWidth = 1; context.beginPath(); context.moveTo(0, 50); context.lineTo(480, 50); context.stroke();
+    context.strokeStyle = canvas.parentElement.style.getPropertyValue('--block-color'); context.lineWidth = 2; context.beginPath();
+    if (group === 4) {
+      const [attack, decay, sustain, release] = snapshot.parameters[4].slice(parameter, parameter + 4);
+      const durations = [attack, decay, 600, release].map(value => Math.log1p(Math.max(0, value)) + 1);
+      const total = durations.reduce((sum, value) => sum + value, 0);
+      const levels = [0, 1, sustain / 100, sustain / 100, 0];
+      let horizontal = 12;
+      context.moveTo(horizontal, 86);
+      durations.forEach((duration, index) => {
+        horizontal += duration / total * 456;
+        context.lineTo(horizontal, 86 - levels[index + 1] * 72);
+      });
+      context.stroke();
+      canvas.setAttribute('aria-label', `ENV${parameter === 0 ? 1 : 2} : Attack ${attack} ms, Decay ${decay} ms, Sustain ${sustain} %, Release ${release} ms`);
+      return;
+    }
+    for (let pixel = 0; pixel < 480; ++pixel) {
+      const phase = (pixel / 160) % 1;
+      const waveShape = group === 0 ? [2, 3, 1, 0, 6][shape] : shape;
+      const value = waveShape === 0 ? Math.sin(phase * 2 * Math.PI) : waveShape === 1 ? 1 - 4 * Math.abs(phase - 0.5)
+        : waveShape === 2 ? 2 * phase - 1 : waveShape === 3 ? (phase < 0.5 ? 1 : -1)
+        : waveShape === 4 ? Math.sin(Math.floor(pixel / 30) * 19) : Math.sin(phase * 2 * Math.PI + Math.sin(phase * 4 * Math.PI));
+      const vertical = 50 - value * 34;
+      if (pixel === 0) context.moveTo(pixel, vertical); else context.lineTo(pixel, vertical);
+    }
+    context.stroke();
+  });
+}
+async function editParameter(group, parameter, value) {
+  if (!snapshot?.parametersReady || !online || working) { renderSynth(true); return; }
+  await execute({ action: 'param', slot: snapshot.slot, group, parameter, value }, 'Son modifi\u00e9. Modifications non enregistr\u00e9es.');
+  renderSynth(true);
+}
+const tabs = [...document.querySelectorAll('[role=tab]')];
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => {
+    tabs.forEach(other => {
+      const active = other === tab; other.setAttribute('aria-selected', String(active)); other.tabIndex = active ? 0 : -1;
+      element(other.dataset.panel).hidden = !active;
+    });
+    renderSynth();
+  });
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const target = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[target].focus(); tabs[target].click();
+  });
+});
+for (let index = 0; index < 32; ++index) {
+  const button = document.createElement('button');
+  button.className = 'step'; button.type = 'button';
+  button.innerHTML = `<span class="dot"></span><span>${number(index + 1)}</span>`;
+  button.addEventListener('click', () => { selected = index; render(); });
+  element('steps').append(button);
+}
+labels.forEach((label, state) => {
+  const button = document.createElement('button'); button.className = 'mode'; button.dataset.write = '';
+  const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = colors[state];
+  button.append(dot, document.createTextNode(label)); button.addEventListener('click', () => editStep({ state }));
+  element('modes').append(button);
+});
+function renderLibrary() {
+  element('patterns').replaceChildren();
+  element('count').textContent = `(${library.length})`;
+  for (const pattern of library) {
+    const row = document.createElement('div'); row.className = 'pattern'; row.dataset.slot = pattern.slot;
+    const load = document.createElement('button'); load.className = 'load'; load.dataset.write = '';
+    const text = document.createElement('span'), slot = document.createElement('small');
+    slot.textContent = String(pattern.slot).padStart(3, '0'); text.append(slot, document.createTextNode(nameOf(pattern.slot)));
+    load.innerHTML = '<i data-lucide="play"></i>'; load.append(text); load.title = 'Charger et jouer';
+    load.addEventListener('click', () => play(pattern.slot)); row.append(load);
+    for (const [icon, title, action] of [
+      ['pencil', 'Renommer', () => { renameSlot = pattern.slot; element('patternName').value = pattern.name; element('renameDialog').showModal(); }],
+      ['trash-2', 'Supprimer', () => { if (confirm(`Supprimer d\u00e9finitivement ${nameOf(pattern.slot)} de la carte SD ?`)) execute({ action: 'delete', slot: pattern.slot }, 'Pattern supprim\u00e9.', true); }]
+    ]) {
+      const button = document.createElement('button'); button.className = 'icon'; button.title = title;
+      button.setAttribute('aria-label', `${title} ${nameOf(pattern.slot)}`); button.dataset.write = '';
+      button.innerHTML = `<i data-lucide="${icon}"></i>`; button.addEventListener('click', action); row.append(button);
+    }
+    element('patterns').append(row);
+  }
+  createIcons({ icons }); render();
+}
+async function refreshLibrary() {
+  element('refresh').disabled = true;
+  try {
+    const data = await request('/api/patterns'); library = data.patterns;
+    element('libraryStatus').textContent = library.length ? '' : 'Aucun pattern sur la carte SD.';
+    renderLibrary();
+  } catch (error) { element('libraryStatus').textContent = error.message; }
+  finally { element('refresh').disabled = false; }
+}
+async function poll() {
+  try {
+    const next = await request('/api/state');
+    token = next.token; online = next.connected;
+    if (next.steps.length === 32) snapshot = next;
+    if (outstanding && next.command.id === outstanding.id && next.command.status !== 'pending') {
+      const current = outstanding; outstanding = null;
+      if (next.command.status === 'ok') current.resolve(); else current.reject(new Error(next.command.status));
+    }
+  } catch { online = false; }
+  render();
+  setTimeout(poll, document.hidden ? 1500 : 350);
+}
+async function execute(payload, success, refresh = false) {
+  if (working || !online) return;
+  working = true; render(); notice('Transmission...');
+  try {
+    const result = await request('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DCO-Token': token }, body: JSON.stringify(payload) });
+    if (result.id) await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { outstanding = null; reject(new Error('D\u00e9lai d\u00e9pass\u00e9. V\u00e9rifier le synth\u00e9tiseur avant de r\u00e9essayer.')); }, 26000);
+      outstanding = { id: result.id, resolve: () => { clearTimeout(timer); resolve(); }, reject: error => { clearTimeout(timer); reject(error); } };
+    });
+    if (payload.action === 'step' || payload.action === 'param') dirty = true;
+    if (['save', 'load', 'delete'].includes(payload.action)) dirty = false;
+    notice(success);
+    if (refresh) await refreshLibrary();
+  } catch (error) { notice(error.message, true); }
+  finally { working = false; render(); }
+}
+function play(slot) {
+  if (dirty && !confirm('Charger ce pattern et abandonner les modifications non enregistr\u00e9es ?')) return;
+  execute({ action: 'load', slot }, 'Pattern en lecture.');
+}
+function editStep(change) {
+  if (!snapshot || !online || working) return;
+  const step = snapshot.steps[selected];
+  execute({ action: 'step', slot: snapshot.slot, step: selected, state: step.state, degree: step.degree, transpose: step.transpose, ...change }, 'Pastille modifi\u00e9e. Modifications non enregistr\u00e9es.');
+}
+element('degree').addEventListener('change', () => {
+  if (element('degree').reportValidity() && element('degree').value !== '') editStep({ degree: Number(element('degree').value) });
+});
+element('transpose').addEventListener('change', () => {
+  if (element('transpose').reportValidity() && element('transpose').value !== '') editStep({ transpose: Number(element('transpose').value) });
+});
+element('play').addEventListener('click', () => execute({ action: 'play' }, 'Lecture en cours.'));
+element('stop').addEventListener('click', () => execute({ action: 'stop' }, 'Lecture arr\u00eat\u00e9e.'));
+element('refresh').addEventListener('click', refreshLibrary);
+element('save').addEventListener('click', () => {
+  const select = element('saveSlot'); select.replaceChildren();
+  for (let slot = 1; slot <= 128; ++slot) {
+    const option = document.createElement('option'); option.value = slot;
+    option.textContent = `${String(slot).padStart(3, '0')} / ${library.some(pattern => pattern.slot === slot) ? nameOf(slot) : 'Vide'}`;
+    select.append(option);
+  }
+  select.value = snapshot.slot || library.reduce((slot, pattern) => pattern.slot === slot ? slot + 1 : slot, 1);
+  element('saveDialog').showModal();
+});
+element('saveForm').addEventListener('submit', event => {
+  event.preventDefault(); const slot = Number(element('saveSlot').value);
+  if (library.some(pattern => pattern.slot === slot) && !confirm(`Remplacer ${nameOf(slot)} sur la carte SD ?`)) return;
+  element('saveDialog').close(); execute({ action: 'save', slot }, 'Pattern enregistr\u00e9 sur la carte SD.', true);
+});
+element('renameForm').addEventListener('submit', event => {
+  event.preventDefault(); const name = element('patternName').value.trim();
+  if (!name || new TextEncoder().encode(name).length > 64) { element('patternName').setCustomValidity('Le nom doit contenir entre 1 et 64 octets UTF-8.'); element('patternName').reportValidity(); return; }
+  element('renameDialog').close(); execute({ action: 'rename', slot: renameSlot, name }, 'Nom enregistr\u00e9.', true);
+});
+element('patternName').addEventListener('input', () => element('patternName').setCustomValidity(''));
+document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => element(button.dataset.close).close()));
+window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+createIcons({ icons }); render(); refreshLibrary(); poll();
+</script>
+</body>
+</html>
